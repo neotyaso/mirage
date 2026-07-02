@@ -196,5 +196,5 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
   - コンカフェ・キャバ嬢系の陽気なキャッチ口調
   - ガハハ笑い、タメ口、相手をヨイショ、1〜2文以内
 
-### 旧コード（退役・未使用・掃除予定）
-`Scene` / `ParticleHuman` / `usePhoneScreen` / `useHandTracking` / `useSegmentation`
+### 旧コード
+`Scene` / `ParticleHuman` / `usePhoneScreen` / `useHandTracking` / `useSegmentation` は2026-07-02に削除済み（未使用の空中スマホ／パーティクル人体コンセプトの残骸。関連モデルファイルも削除）
