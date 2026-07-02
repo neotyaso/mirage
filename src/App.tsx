@@ -83,7 +83,7 @@ const SPEAKER_ID = 888753760;
 export default function App() {
   const speakingRef = useRef(false);
   const volumeRef = useRef(0);
-  const { state: convState, transcript, reply, log, startConversation, stopConversation, resetHistory } = useConversation(speakingRef, volumeRef);
+  const { state: convState, log, startConversation, stopConversation, resetHistory } = useConversation(speakingRef, volumeRef);
   const logEndRef = useRef<HTMLDivElement>(null);
   const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
@@ -93,6 +93,16 @@ export default function App() {
   const [present, setPresent] = useState(false);
   const [faces, setFaces] = useState(0);
   const [zone, setZone] = useState<DistanceZone>("absent");
+  const [debugMode, setDebugMode] = useState(false); // 展示本番では隠す。"d"キーで表示切り替え
+
+  // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "d") setDebugMode((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // チャットログが増えたら自動で最下部へスクロール
   useEffect(() => {
@@ -192,6 +202,9 @@ export default function App() {
   // 自動呼び込み制御：距離ゾーンに応じてセリフ・クールダウンを変える
   const lastCall = useRef(0);
   const wasPresent = useRef(false);
+  // near まで近づいたら自動で会話モードON。離れたら自動でOFF＋次の来場者のため履歴リセット
+  const lastPresentAtRef = useRef(performance.now());
+  const AWAY_TIMEOUT_MS = 4000; // これだけ不在が続いたら「離れた」と判断（顔検出の一瞬の途切れで切れないように）
   useEffect(() => {
     const id = setInterval(() => {
       const p = presentRef.current;
@@ -213,6 +226,17 @@ export default function App() {
         }
       }
       wasPresent.current = p;
+
+      if (p) lastPresentAtRef.current = performance.now();
+      if (started && !paused) {
+        if (z === "near" && convState === "idle") {
+          startConversation();
+        }
+        if (convState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
+          stopConversation();
+          resetHistory();
+        }
+      }
     }, 150);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,7 +278,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 検出用カメラ（確認のため小窓表示。展示では消す） */}
+      {/* 検出用カメラ（顔検出が参照する実体なので常時マウント。展示中は"d"キーを押すまで非表示） */}
       <video
         ref={videoRef}
         playsInline
@@ -270,6 +294,7 @@ export default function App() {
           border: present ? "2px solid #0f8" : "2px solid #333",
           borderRadius: 6,
           zIndex: 10,
+          visibility: debugMode ? "visible" : "hidden",
         }}
       />
 
@@ -277,7 +302,7 @@ export default function App() {
         <button style={startBtnStyle} onClick={handleStart}>
           ▶ 展示スタート
         </button>
-      ) : (
+      ) : debugMode ? (
         <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8 }}>
           {convState === "idle" && (
             <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
@@ -300,10 +325,10 @@ export default function App() {
             {paused ? "▶ 再開" : "⏸ 停止"}
           </button>
         </div>
-      )}
+      ) : null}
 
-      {/* 会話パネル */}
-      {started && (
+      {/* 会話パネル（手動操作用。会話はnear接近で自動開始するので通常は不要。デバッグ時のみ表示） */}
+      {started && debugMode && (
         <div style={convPanelStyle}>
           <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
             <button
@@ -316,15 +341,15 @@ export default function App() {
               🔄 会話リセット
             </button>
           </div>
-          {transcript && <div style={bubbleStyle("user")}>あなた: {transcript}</div>}
-          {reply && <div style={bubbleStyle("ai")}>レム: {reply}</div>}
         </div>
       )}
 
-      <div style={hudStyle}>
-        cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
-        {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {started ? "稼働中" : "停止中"}
-      </div>
+      {debugMode && (
+        <div style={hudStyle}>
+          cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
+          {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {started ? "稼働中" : "停止中"}
+        </div>
+      )}
     </div>
   );
 }
@@ -380,16 +405,6 @@ const convBtnStyle: CSSProperties = {
   cursor: "pointer",
   fontWeight: "bold",
 };
-
-const bubbleStyle = (who: "user" | "ai"): CSSProperties => ({
-  padding: "8px 14px",
-  borderRadius: 10,
-  fontSize: 14,
-  color: "#fff",
-  background: who === "user" ? "rgba(55,65,81,0.85)" : "rgba(139,92,246,0.85)",
-  backdropFilter: "blur(4px)",
-  textAlign: "left",
-});
 
 const chatLogStyle: CSSProperties = {
   position: "absolute",

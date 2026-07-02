@@ -8,6 +8,12 @@ const GROQ_STT_URL = "/groq/openai/v1/audio/transcriptions";
 const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile"; // gemma2はGroqで廃止済み。もっと速さ重視なら "llama-3.1-8b-instant"
 const GROQ_STT_MODEL = "whisper-large-v3-turbo";
 
+// 会場のWi-Fiが落ちる/Groqが不調な場合のフォールバック（完全ローカル）
+// 事前に `python stt_server.py`（.venv）とOllama(`ollama run gemma2`)を起動しておくこと
+const OLLAMA_URL = "/ollama";
+const OLLAMA_MODEL = "gemma2";
+const LOCAL_STT_URL = "/stt/transcribe";
+
 const AIVIS_URL = "http://localhost:10101";
 const SPEAKER_ID = 888753760;
 
@@ -233,7 +239,31 @@ export function useConversation(
           }
         }
       }
-    } catch { /* aborted or error */ }
+    } catch (err) {
+      // ユーザーが会話を終了した（abort）だけならフォールバックしない。Groqの障害/ネット切断時のみローカルへ
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        try {
+          abortRef.current = new AbortController();
+          const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: OLLAMA_MODEL,
+              messages: [{ role: "system", content: SYSTEM_PROMPT }, ...historyRef.current],
+              stream: false,
+            }),
+            signal: abortRef.current.signal,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            full = data.message?.content ?? "";
+            unspoken = full;
+            if (full) updateAssistantEntry(entryId, full);
+            setReply(full);
+          }
+        } catch { /* ローカルも失敗。諦める */ }
+      }
+    }
 
     const rest = unspoken.trim();
     if (rest && activeRef.current) {
@@ -354,16 +384,25 @@ export function useConversation(
       form.append("language", "ja");
       try {
         setState("thinking");
-        const res = await fetch(GROQ_STT_URL, { method: "POST", body: form });
-        if (!res.ok) throw new Error(`groq stt ${res.status}`);
-        const { text } = await res.json();
+        let text = "";
+        try {
+          const res = await fetch(GROQ_STT_URL, { method: "POST", body: form });
+          if (!res.ok) throw new Error(`groq stt ${res.status}`);
+          text = (await res.json()).text ?? "";
+        } catch {
+          // Groqが失敗（ネット切断・障害等）→ ローカルSTTへフォールバック
+          const localForm = new FormData();
+          localForm.append("audio", blob, "audio.webm");
+          const res2 = await fetch(LOCAL_STT_URL, { method: "POST", body: localForm });
+          text = (await res2.json()).text ?? "";
+        }
         if (text && activeRef.current) {
           setTranscript(text);
           pushLog("user", text);
           await chat(text);
           return;
         }
-      } catch { /* STT失敗 */ }
+      } catch { /* STT失敗（ローカルも含め両方ダメだった） */ }
       busyRef.current = false;
       if (activeRef.current) setState("listening");
     };
