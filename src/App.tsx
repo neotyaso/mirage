@@ -4,6 +4,8 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Avatar } from "./components/Avatar";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
+import { useConversation } from "./hooks/useConversation";
+import type { ConvState } from "./hooks/useConversation";
 import type { MutableRefObject } from "react";
 
 // Off-axis カメラ: 来場者の顔位置でカメラが動き「3Dの窓」効果を生む
@@ -81,6 +83,8 @@ const SPEAKER_ID = 888753760;
 export default function App() {
   const speakingRef = useRef(false);
   const volumeRef = useRef(0);
+  const { state: convState, transcript, reply, log, startConversation, stopConversation, resetHistory } = useConversation(speakingRef, volumeRef);
+  const logEndRef = useRef<HTMLDivElement>(null);
   const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
 
@@ -89,6 +93,11 @@ export default function App() {
   const [present, setPresent] = useState(false);
   const [faces, setFaces] = useState(0);
   const [zone, setZone] = useState<DistanceZone>("absent");
+
+  // チャットログが増えたら自動で最下部へスクロール
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [log]);
 
   // Web Speech API フォールバック用
   useEffect(() => {
@@ -109,7 +118,17 @@ export default function App() {
     speechSynthesis.speak(u);
   }
 
+  const activeSourceRef = useRef<{ stop: () => void; ctx: AudioContext } | null>(null);
+
   async function speak(text: string) {
+    // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
+    if (activeSourceRef.current) {
+      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
+      activeSourceRef.current.ctx.close().catch(() => {});
+      activeSourceRef.current = null;
+    }
+    speechSynthesis.cancel();
+
     speakingRef.current = false;
     volumeRef.current = 0;
     try {
@@ -139,6 +158,7 @@ export default function App() {
       analyser.connect(ctx.destination);
 
       speakingRef.current = true;
+      activeSourceRef.current = { stop: () => source.stop(), ctx };
 
       function tick() {
         if (!speakingRef.current) return;
@@ -151,7 +171,8 @@ export default function App() {
       source.onended = () => {
         speakingRef.current = false;
         volumeRef.current = 0;
-        ctx.close();
+        if (activeSourceRef.current?.ctx === ctx) activeSourceRef.current = null;
+        if (ctx.state !== "closed") ctx.close().catch(() => {});
       };
 
       source.start();
@@ -179,7 +200,7 @@ export default function App() {
       setFaces(faceCountRef.current);
       setZone(z);
 
-      if (started && !paused && p && z !== "absent") {
+      if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
         const now = performance.now();
         const cooldown = COOLDOWN[z];
         // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
@@ -195,7 +216,7 @@ export default function App() {
     }, 150);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started, paused]);
+  }, [started, paused, convState]);
 
   function handleStart() {
     setStarted(true);
@@ -219,6 +240,19 @@ export default function App() {
           <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} />
         </Suspense>
       </Canvas>
+
+      {/* 会話ログ（左側に流れるチャット） */}
+      {started && log.length > 0 && (
+        <div style={chatLogStyle}>
+          {log.map((entry) => (
+            <div key={entry.id} style={chatBubbleStyle(entry.role)}>
+              <div style={chatSenderStyle}>{entry.role === "user" ? "あなた" : "レム"}</div>
+              {entry.text}
+            </div>
+          ))}
+          <div ref={logEndRef} />
+        </div>
+      )}
 
       {/* 検出用カメラ（確認のため小窓表示。展示では消す） */}
       <video
@@ -245,9 +279,11 @@ export default function App() {
         </button>
       ) : (
         <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8 }}>
-          <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
-            🔊 手動呼び込み
-          </button>
+          {convState === "idle" && (
+            <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
+              🔊 手動呼び込み
+            </button>
+          )}
           <button
             style={{ ...callBtnStyle, background: paused ? "rgba(34,197,94,0.8)" : "rgba(239,68,68,0.8)" }}
             onClick={() => {
@@ -266,9 +302,28 @@ export default function App() {
         </div>
       )}
 
+      {/* 会話パネル */}
+      {started && (
+        <div style={convPanelStyle}>
+          <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
+            <button
+              style={{ ...convBtnStyle, background: convState === "idle" ? "#8b5cf6" : "#ef4444" }}
+              onClick={convState === "idle" ? startConversation : stopConversation}
+            >
+              {convState === "idle" ? "🎤 会話開始" : convState === "listening" ? "👂 聴いてる…" : convState === "thinking" ? "💭 考え中…" : "🔊 喋ってる"}
+            </button>
+            <button style={{ ...convBtnStyle, background: "#374151" }} onClick={resetHistory}>
+              🔄 会話リセット
+            </button>
+          </div>
+          {transcript && <div style={bubbleStyle("user")}>あなた: {transcript}</div>}
+          {reply && <div style={bubbleStyle("ai")}>レム: {reply}</div>}
+        </div>
+      )}
+
       <div style={hudStyle}>
         cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
-        {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | {started ? "稼働中" : "停止中"}
+        {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {started ? "稼働中" : "停止中"}
       </div>
     </div>
   );
@@ -303,6 +358,74 @@ const callBtnStyle: CSSProperties = {
   borderRadius: 8,
   cursor: "pointer",
 };
+
+const convPanelStyle: CSSProperties = {
+  position: "absolute",
+  top: 16,
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: "min(480px, 90vw)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  zIndex: 20,
+};
+
+const convBtnStyle: CSSProperties = {
+  padding: "10px 20px",
+  fontSize: 14,
+  color: "#fff",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+  fontWeight: "bold",
+};
+
+const bubbleStyle = (who: "user" | "ai"): CSSProperties => ({
+  padding: "8px 14px",
+  borderRadius: 10,
+  fontSize: 14,
+  color: "#fff",
+  background: who === "user" ? "rgba(55,65,81,0.85)" : "rgba(139,92,246,0.85)",
+  backdropFilter: "blur(4px)",
+  textAlign: "left",
+});
+
+const chatLogStyle: CSSProperties = {
+  position: "absolute",
+  top: 16,
+  left: 16,
+  bottom: 72,
+  width: "min(320px, 80vw)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  overflowY: "auto",
+  zIndex: 15,
+  padding: "4px 2px",
+  scrollbarWidth: "thin",
+};
+
+const chatSenderStyle: CSSProperties = {
+  fontSize: 11,
+  opacity: 0.7,
+  marginBottom: 2,
+  fontWeight: "bold",
+};
+
+const chatBubbleStyle = (role: "user" | "assistant"): CSSProperties => ({
+  alignSelf: role === "user" ? "flex-end" : "flex-start",
+  maxWidth: "88%",
+  padding: "8px 12px",
+  borderRadius: 12,
+  fontSize: 13,
+  lineHeight: 1.4,
+  color: "#fff",
+  background: role === "user" ? "rgba(55,65,81,0.85)" : "rgba(139,92,246,0.85)",
+  backdropFilter: "blur(4px)",
+  textAlign: "left",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+});
 
 const hudStyle: CSSProperties = {
   position: "absolute",

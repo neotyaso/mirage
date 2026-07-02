@@ -174,14 +174,39 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
 
 ---
 
-## その後（B）
-- STT(Whisper) → LLM(Ollama) → TTS(AivisSpeech) で双方向会話
+## その後（B）→ 実装済み・Groqに移行済み
+- STT(Groq Whisper) → LLM(Groq Llama) → TTS(AivisSpeech) で双方向会話。ストリーミング化で低レイテンシ化済み
 
 ---
 
-## 技術メモ
-- フロント: Vite + React + R3F + three-vrm（**Next.js不採用**）
-- AIの脳・声は **Python ローカルサーバーを React から fetch 直叩き**
-  （VOICEVOX/AivisSpeech は localhost にHTTP APIを持つ）
-- 旧コード（`Scene` / `ParticleHuman` / `usePhoneScreen` / `useHandTracking`
-  / `useSegmentation`）は退役・未使用（掃除予定）
+## 技術スタック
+
+### フロントエンド
+- **Vite + React + TypeScript**（Next.js不採用）
+- **React Three Fiber + three-vrm** — VRM描画・SpringBone・表情
+- **MediaPipe FaceLandmarker** — 顔検出・距離推定・blendshapes表情取得
+
+### 会話システム（2026-07-02〜: ローカルOllama/faster-whisperからGroqに移行）
+| 役割 | 使用技術 | エンドポイント |
+|------|---------|--------------|
+| **STT** | Groq Whisper `whisper-large-v3-turbo` | `/groq/openai/v1/audio/transcriptions`（Viteプロキシ経由） |
+| **LLM** | Groq `llama-3.3-70b-versatile`（ストリーミング＋文単位TTS） | `/groq/openai/v1/chat/completions`（Viteプロキシ経由） |
+| **TTS** | AivisSpeech（VOICEVOX互換） | localhost:10101 |
+
+- APIキーは `.env.local` の `GROQ_API_KEY`（`.env.example`参照）。`vite.config.ts`のプロキシがサーバー側で付与するのでブラウザJSには出さない
+- 無料枠: `llama-3.3-70b-versatile`は1000req/日・12000トークン/分（2026-07-02時点、要確認）
+- LLMモデルは `src/hooks/useConversation.ts` の `GROQ_CHAT_MODEL` を変えるだけで切り替え可
+  - 現在: `llama-3.3-70b-versatile`（gemma2はGroqで廃止済み）
+  - 代替: `llama-3.1-8b-instant`（最速・無料枠の日次上限も広い）/ `openai/gpt-oss-120b`（最大だが会話向きではなさそう）
+- STT精度が甘い場合は `GROQ_STT_MODEL` を `whisper-large-v3`（turboでない方、やや遅いが精度最大）に
+- **オフライン用フォールバック**（ネット不通時）: `stt_server.py`（faster-whisper `small`、要`.venv`）+ Ollama `gemma2`が残置してある。`useConversation.ts`をOllama版に戻せば復帰可能
+
+### キャラクター
+- **名前**: レム
+- **VRMモデル**: `public/avatar/sample.vrm`（暫定。本番はVRoid自作に差し替え）
+- **システムプロンプト**: `src/hooks/useConversation.ts` の `SYSTEM_PROMPT`
+  - コンカフェ・キャバ嬢系の陽気なキャッチ口調
+  - ガハハ笑い、タメ口、相手をヨイショ、1〜2文以内
+
+### 旧コード（退役・未使用・掃除予定）
+`Scene` / `ParticleHuman` / `usePhoneScreen` / `useHandTracking` / `useSegmentation`
