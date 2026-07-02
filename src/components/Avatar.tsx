@@ -3,7 +3,8 @@ import { useFrame } from "@react-three/fiber";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 import * as THREE from "three";
-import type { FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
+import { getDistanceZone } from "../hooks/useFaceDetection";
+import type { FaceCenter, FaceExpression, DistanceZone } from "../hooks/useFaceDetection";
 
 const MODEL_URL = "/avatar/sample.vrm";
 
@@ -16,7 +17,24 @@ export interface AvatarProps {
   faceCenterRef?: MutableRefObject<FaceCenter | null>;
   allFaceCentersRef?: MutableRefObject<FaceCenter[]>;
   expressionRef?: MutableRefObject<FaceExpression>;
+  faceSizeRef?: MutableRefObject<number>;
 }
+
+// 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
+const ZONE_APPROACH: Record<DistanceZone, number> = {
+  absent: 0,    // 誰もいない → 奥で待機
+  far: 0.15,    // 遠くにいる → まだ奥
+  mid: 0.5,     // 気づいて少し前へ
+  near: 1.0,    // 目の前 → 覗き込む
+};
+const APPROACH_LERP = 0.02; // 近づく速さ（小さいほどゆっくり優雅に）
+
+// 体ごとの前後移動は控えめに（大きくすると頭が見切れる）
+const APPROACH_Z_BACK = -0.4;  // 接近度0：奥で待機
+const APPROACH_Z_FRONT = 0.35; // 接近度1：少しだけ手前
+// 不足分は「上半身の前傾（覗き込み）」で出す。頭は必ずフレーム内に残る
+// 逆に反っちゃう場合は符号を反転（-0.22）
+const LEAN_MAX = 0.22; // ラジアン（約13°）
 
 /**
  * VRMアバターを全身表示する。
@@ -31,7 +49,7 @@ export interface AvatarProps {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -39,6 +57,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const lookAtTarget = useRef(new THREE.Object3D());
   const scanIndex = useRef(0);
   const lastScan = useRef(0);
+  const approach = useRef(0); // 現在の接近度 0〜1
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -52,6 +71,19 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         VRMUtils.rotateVRM0(loaded);
         loaded.scene.traverse((o) => (o.frustumCulled = false));
         if (loaded.lookAt) loaded.lookAt.target = lookAtTarget.current;
+
+        // 整列ポーズ: T/A-poseから腕を自然に下ろす
+        const h = loaded.humanoid;
+        const lArm = h?.getNormalizedBoneNode("leftUpperArm");
+        const rArm = h?.getNormalizedBoneNode("rightUpperArm");
+        const lElbow = h?.getNormalizedBoneNode("leftLowerArm");
+        const rElbow = h?.getNormalizedBoneNode("rightLowerArm");
+        if (lArm) { lArm.rotation.z = -1.2; lArm.rotation.x = 0.1; }
+        if (rArm) { rArm.rotation.z =  1.2; rArm.rotation.x = 0.1; }
+        // 肘を軽く曲げる（より自然に）
+        if (lElbow) lElbow.rotation.z = -0.15;
+        if (rElbow) rElbow.rotation.z =  0.15;
+
         if (alive) setVrm(loaded);
         else VRMUtils.deepDispose(loaded.scene);
       },
@@ -70,6 +102,15 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
 
     // 呼吸（わずかに上下）
     vrm.scene.position.y = Math.sin(t * 1.1) * 0.004;
+
+    // 接近演出: 来場者が近いほどキャラが「覗き込む」
+    // 体ごとの前後移動は控えめ＋上半身の前傾で寄る → 頭が見切れない
+    const zone = getDistanceZone(faceSizeRef?.current ?? 0);
+    approach.current = lerp(approach.current, ZONE_APPROACH[zone], APPROACH_LERP);
+    const a = approach.current;
+    vrm.scene.position.z = lerp(APPROACH_Z_BACK, APPROACH_Z_FRONT, a);
+    const spine = vrm.humanoid?.getNormalizedBoneNode("spine");
+    if (spine) spine.rotation.x = a * LEAN_MAX;
 
     // 視線追従: 複数人いれば順番にスキャン、1人ならその人を見る
     const all = allFaceCentersRef?.current ?? [];

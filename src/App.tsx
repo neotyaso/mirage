@@ -18,7 +18,9 @@ function OffAxisCamera({ faceCenterRef }: { faceCenterRef: MutableRefObject<Face
   useFrame(() => {
     const fc = faceCenterRef.current;
     // 顔なし → 中央に戻る
-    const tx = fc ? (0.5 - fc.x) * 2 * CAM_RANGE_X : 0; // 左右反転（カメラ映像は鏡像）
+    // 表示映像は鏡像（scaleX(-1)）。来場者が自分の右に動く→鏡像では右に見える
+    // →「窓」として同じ方向にカメラを動かすため fc.x をそのまま使う
+    const tx = fc ? (fc.x - 0.5) * 2 * CAM_RANGE_X : 0;
     const ty = fc ? (0.5 - fc.y) * 2 * CAM_RANGE_Y : 0;
 
     camera.position.x += (CAM_BASE[0] + tx - camera.position.x) * CAM_LERP;
@@ -83,6 +85,7 @@ export default function App() {
     useFaceDetection();
 
   const [started, setStarted] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [present, setPresent] = useState(false);
   const [faces, setFaces] = useState(0);
   const [zone, setZone] = useState<DistanceZone>("absent");
@@ -176,7 +179,7 @@ export default function App() {
       setFaces(faceCountRef.current);
       setZone(z);
 
-      if (started && p && z !== "absent") {
+      if (started && !paused && p && z !== "absent") {
         const now = performance.now();
         const cooldown = COOLDOWN[z];
         // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
@@ -192,7 +195,7 @@ export default function App() {
     }, 150);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started]);
+  }, [started, paused]);
 
   function handleStart() {
     setStarted(true);
@@ -213,7 +216,7 @@ export default function App() {
         <OffAxisCamera faceCenterRef={faceCenterRef} />
 
         <Suspense fallback={null}>
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} />
         </Suspense>
       </Canvas>
 
@@ -241,9 +244,26 @@ export default function App() {
           ▶ 展示スタート
         </button>
       ) : (
-        <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
-          🔊 手動呼び込み
-        </button>
+        <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8 }}>
+          <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
+            🔊 手動呼び込み
+          </button>
+          <button
+            style={{ ...callBtnStyle, background: paused ? "rgba(34,197,94,0.8)" : "rgba(239,68,68,0.8)" }}
+            onClick={() => {
+              if (paused) {
+                setPaused(false);
+              } else {
+                setPaused(true);
+                speechSynthesis.cancel();
+                speakingRef.current = false;
+                volumeRef.current = 0;
+              }
+            }}
+          >
+            {paused ? "▶ 再開" : "⏸ 停止"}
+          </button>
+        </div>
       )}
 
       <div style={hudStyle}>
