@@ -1,8 +1,7 @@
 # 再開メモ
 
-> 最終更新: 2026-07-01
+> 最終更新: 2026-07-03
 > 方向確定: **AITuber受付嬢（呼び込み展示）**
-> ※ REQUIREMENTS.md はまだ旧コンセプト（空中スマホ）のまま — 後で改訂する
 
 ---
 
@@ -198,3 +197,41 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
 
 ### 旧コード
 `Scene` / `ParticleHuman` / `usePhoneScreen` / `useHandTracking` / `useSegmentation` は2026-07-02に削除済み（未使用の空中スマホ／パーティクル人体コンセプトの残骸。関連モデルファイルも削除）
+
+---
+
+## 3Dモデル生成の実験（img3d）— 保留・撤収
+
+> 2026-07-02〜03: 研究室の教授の写真→3Dモデル化ツール(`img3d`, TripoSR→Blender軽量化→骨入れ→Three.js)を
+> `tools/img3d/`にcloneして試したが、自分の手には余ると判断し撤収。ディレクトリごと削除済み（元々gitignore対象で本体には無関係）。
+> mirage本体のシナリオ・呼び込み演出に集中する方針に戻す。
+
+再開する場合のメモ（判断済みの結論を詳しく残す）:
+
+### 骨入れの方針: 手動Blenderはやらない、AIに任せる
+教授いわく「3D生成は簡単、骨入れはBlenderでやったほうがいい」との助言。ただしGUIで手作業する意味ではなく、
+元の`blender_rig.py`（縦棒ボーン3本＋高さで機械的に重み付けする自作の簡易ヒューリスティック）を、
+学習済みモデルによるちゃんとした自動リグに置き換える方向で解決する。
+
+- 候補: **RigAnything**（SIGGRAPH TOG 2025, テンプレート不要・任意ポーズ対応・推論2秒以下）
+  - 公式実装: `github.com/Isabella98Liu/RigAnything`
+  - 入出力: GLB/OBJ → リグ済みGLB。CUDA推奨だがCPUでも動作可、`bpy`ベースでBlenderアプリ不要
+  - 未着手（cloneして繋ぐのは次のフェーズ）
+- 参考（骨入れではなく動かし方の話）: VidAnimator (arXiv:2508.01878) — 実写動画からモーション転写する手法。Mixamoの既成モーションでは足りなくなったら参照
+
+### 現フェーズだった: TripoSRのメッシュ生成クオリティ向上
+骨入れは方針が決まった（AI任せ）ので後回しにし、まずは元となる3Dメッシュ自体の質を上げる方向で動いていた。
+
+### 実行環境: MacではなくWindows(GTX 1080Ti)でやる方針に転換
+M1 MacBook AirはGPUはあるがCUDA非対応（Apple GPUはそもそもCUDAというNVIDIA専用規格を実行できない）。
+TripoSR/SF3D等のコードは`torch.cuda.is_available()`しか見ておらずMPS未対応のため、Mac上では常にCPU律速になる。
+→ やるなら家のWindows機（**GTX 1080Ti, 11GB VRAM**）に作業を移す。11GBあれば以下がだいたい候補に入る:
+
+- **Stable Fast 3D (SF3D)**: 6GB VRAM、TripoSRと同じStability AI製の後継、メッシュ品質+UV展開+マテリアル予測が強化。HFゲート付き（同意ボタンだけの即時パターン想定）
+- **TripoSG**(VAST-AI＝TripoSRと同じ開発元): 8GB+ VRAM、ゲートなし、MIT license
+- **InstantMesh**(TencentARC): ゲートなし、Apache-2.0、ただし多視点diffusion→再構成の2段構えでやや複雑
+- ~~TRELLIS.2-4B~~（Microsoft, 24GB+ VRAM）は1080Tiでも厳しいので除外
+
+`tools/img3d/`にあった内容（pyproject.tomlのMac向け修正、`to_gradio_3d_orientation`の向き補正）はMac専用の一時対応だった。ディレクトリごと削除済み。Windows機で再開する場合は元のrepoの構成（Linux/CUDA前提）にほぼ近いので、そのまま`uv sync`で通る可能性が高い。
+
+`tools/img3d/`の内容（pyproject.tomlのMac向け修正、`to_gradio_3d_orientation`の向き補正）はMac専用の一時対応。Windows機でやる場合は元のrepoの構成（Linux/CUDA前提）にほぼ近いので、そのまま`uv sync`で通る可能性が高い。

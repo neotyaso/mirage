@@ -42,6 +42,11 @@ export function useFaceDetection() {
     let stopped = false;
     let lastVideoTime = -1;
     let lastSeen = 0;
+    // MediaPipeのfaceLandmarks配列は複数人検出時、フレームごとに並び順が入れ替わりうる
+    // （landmarks[0]が別人になる）。素直にindex 0を使うと、2人目が現れた瞬間に
+    // カメラ追従・距離判定・視線の基準が別人に急に切り替わってしまう。
+    // 直前フレームで「話しかけてる相手」だった顔に最も近い顔を、今回も同一人物として追い続ける。
+    let primaryCenter: FaceCenter | null = null;
 
     function blendshapeScore(
       categories: { categoryName: string; score: number }[],
@@ -75,10 +80,8 @@ export function useFaceDetection() {
 
         if (count > 0) {
           lastSeen = now;
-          const vw = video.videoWidth || 640;
-          const vh = video.videoHeight || 480;
 
-          // 各顔の中心をランドマークのバウンディングボックスから計算
+          // 各顔の中心・横幅をランドマークのバウンディングボックスから計算
           const centers: FaceCenter[] = landmarks.map((lm) => {
             const xs = lm.map((p) => p.x);
             const ys = lm.map((p) => p.y);
@@ -89,25 +92,42 @@ export function useFaceDetection() {
               y: (minY + maxY) / 2,
             };
           });
+          const widths = landmarks.map((lm) => {
+            const xs = lm.map((p) => p.x);
+            return Math.max(...xs) - Math.min(...xs);
+          });
 
-          // 1人目のfaceSize（横幅）
-          const lm0 = landmarks[0];
-          const xs0 = lm0.map((p) => p.x);
-          const faceWidth = Math.max(...xs0) - Math.min(...xs0);
+          // 「話しかけてる相手」の主対象を選ぶ。直前フレームで追っていた位置に一番近い顔を
+          // 引き続き主対象にする（見失っていた/初回なら、一番大きい＝一番近い顔を選ぶ）
+          let primaryIdx = 0;
+          if (primaryCenter) {
+            let bestDist = Infinity;
+            centers.forEach((c, i) => {
+              const d = Math.hypot(c.x - primaryCenter!.x, c.y - primaryCenter!.y);
+              if (d < bestDist) { bestDist = d; primaryIdx = i; }
+            });
+          } else {
+            let bestWidth = -Infinity;
+            widths.forEach((w, i) => {
+              if (w > bestWidth) { bestWidth = w; primaryIdx = i; }
+            });
+          }
+          primaryCenter = centers[primaryIdx];
 
           allFaceCentersRef.current = centers;
-          faceCenterRef.current = centers[0] ?? null;
-          faceSizeRef.current = faceWidth;
+          faceCenterRef.current = centers[primaryIdx] ?? null;
+          faceSizeRef.current = widths[primaryIdx] ?? 0;
 
-          // blendshapesから表情スコアを抽出（1人目）
-          if (blendshapes.length > 0) {
-            const cats = blendshapes[0].categories;
+          // blendshapesから表情スコアを抽出（主対象と同じ人物のインデックス）
+          if (blendshapes.length > primaryIdx) {
+            const cats = blendshapes[primaryIdx].categories;
             expressionRef.current = {
               smile: blendshapeScore(cats, "mouthSmileLeft", "mouthSmileRight"),
               surprised: blendshapeScore(cats, "browInnerUp", "eyeWideLeft", "eyeWideRight"),
             };
           }
         } else {
+          primaryCenter = null;
           faceCenterRef.current = null;
           faceSizeRef.current = 0;
           allFaceCentersRef.current = [];

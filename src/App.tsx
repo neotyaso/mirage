@@ -205,6 +205,10 @@ export default function App() {
   // near まで近づいたら自動で会話モードON。離れたら自動でOFF＋次の来場者のため履歴リセット
   const lastPresentAtRef = useRef(performance.now());
   const AWAY_TIMEOUT_MS = 4000; // これだけ不在が続いたら「離れた」と判断（顔検出の一瞬の途切れで切れないように）
+  // 会話中に相手の顔検出が一瞬途切れて自動リセットされた直後の復帰では、
+  // 「新規来場者」扱いの呼び込みセリフを鳴らさず静かに会話を再開する（2人目が現れて一瞬顔が隠れた時などに
+  // 「ねえねえ話していかない？」が会話に割り込む不自然さを防ぐ）
+  const silentResumeRef = useRef(false);
   useEffect(() => {
     const id = setInterval(() => {
       const p = presentRef.current;
@@ -216,12 +220,16 @@ export default function App() {
       if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
         const now = performance.now();
         const cooldown = COOLDOWN[z];
-        // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
-        const isNewArrival = !wasPresent.current;
-        if (isNewArrival || now - lastCall.current > cooldown) {
-          if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
-            callOut(z);
-            lastCall.current = now;
+        if (silentResumeRef.current) {
+          silentResumeRef.current = false;
+        } else {
+          // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
+          const isNewArrival = !wasPresent.current;
+          if (isNewArrival || now - lastCall.current > cooldown) {
+            if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
+              callOut(z);
+              lastCall.current = now;
+            }
           }
         }
       }
@@ -235,6 +243,7 @@ export default function App() {
         if (convState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
           stopConversation();
           resetHistory();
+          silentResumeRef.current = true;
         }
       }
     }, 150);
