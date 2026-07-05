@@ -58,6 +58,14 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const scanIndex = useRef(0);
   const lastScan = useRef(0);
   const approach = useRef(0); // 現在の接近度 0〜1
+  const gestureBones = useRef<{
+    lArm?: THREE.Object3D | null;
+    rArm?: THREE.Object3D | null;
+    lElbow?: THREE.Object3D | null;
+    rElbow?: THREE.Object3D | null;
+  }>({});
+  const gestureClock = useRef(0);
+  const gestureSeed = useRef(Math.random() * 10);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -83,6 +91,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         // 肘を軽く曲げる（より自然に）
         if (lElbow) lElbow.rotation.z = -0.15;
         if (rElbow) rElbow.rotation.z =  0.15;
+        gestureBones.current = { lArm, rArm, lElbow, rElbow };
 
         if (alive) setVrm(loaded);
         else VRMUtils.deepDispose(loaded.scene);
@@ -130,6 +139,33 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, 0.05);
     lookAtTarget.current.position.z = targetZ;
 
+    // 発話中のジェスチャー: 喋ってる間だけ腕を揺らす。周波数を左右・複数重ねて機械的な繰り返しを避ける
+    const speaking = speakingRef?.current ?? false;
+    const { lArm, rArm, lElbow, rElbow } = gestureBones.current;
+    if (lArm && rArm && lElbow && rElbow) {
+      if (speaking) {
+        gestureClock.current += delta;
+        const gt = gestureClock.current;
+        const lWave = Math.sin(gt * 1.6 + gestureSeed.current) * 0.5 + Math.sin(gt * 0.7) * 0.2;
+        const rWave = Math.sin(gt * 1.3 + gestureSeed.current + 1.7) * 0.5 + Math.sin(gt * 0.5 + 2) * 0.2;
+        lArm.rotation.z = -1.2 + lWave * 0.25;
+        lArm.rotation.x = 0.1 - Math.max(0, lWave) * 0.3;
+        lElbow.rotation.z = -0.15 + lWave * 0.35;
+        rArm.rotation.z = 1.2 - rWave * 0.25;
+        rArm.rotation.x = 0.1 - Math.max(0, rWave) * 0.3;
+        rElbow.rotation.z = 0.15 - rWave * 0.35;
+      } else {
+        gestureClock.current = 0;
+        // 喋ってない間は基本姿勢へ滑らかに戻す
+        lArm.rotation.z = lerp(lArm.rotation.z, -1.2, 0.05);
+        lArm.rotation.x = lerp(lArm.rotation.x, 0.1, 0.05);
+        lElbow.rotation.z = lerp(lElbow.rotation.z, -0.15, 0.05);
+        rArm.rotation.z = lerp(rArm.rotation.z, 1.2, 0.05);
+        rArm.rotation.x = lerp(rArm.rotation.x, 0.1, 0.05);
+        rElbow.rotation.z = lerp(rElbow.rotation.z, 0.15, 0.05);
+      }
+    }
+
     const em = vrm.expressionManager;
     if (em) {
       // まばたき
@@ -147,7 +183,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       }
 
       // リップシンク
-      const speaking = speakingRef?.current ?? false;
       const vol = volumeRef?.current ?? 0;
       // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
       const target = speaking
