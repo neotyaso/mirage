@@ -68,7 +68,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       MODEL_URL,
       (gltf) => {
         const loaded = gltf.userData.vrm as VRM;
-        VRMUtils.rotateVRM0(loaded);
+        if (loaded.meta?.metaVersion === "0") VRMUtils.rotateVRM0(loaded);
         loaded.scene.traverse((o) => (o.frustumCulled = false));
         if (loaded.lookAt) loaded.lookAt.target = lookAtTarget.current;
 
