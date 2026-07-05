@@ -65,7 +65,13 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     rElbow?: THREE.Object3D | null;
   }>({});
   const gestureClock = useRef(0);
-  const gestureSeed = useRef(Math.random() * 10);
+  const wasSpeaking = useRef(false);
+  // 喋り始めるたびに再抽選するプロフィール（毎回リズムが変わるように）
+  const gestureProfile = useRef({ freqL: 1.6, freqR: 1.3, phaseL: 0, phaseR: 0 });
+  const nextBurstAt = useRef(0.5);
+  const burst = useRef<{ active: boolean; start: number; dur: number; arm: "l" | "r" | "both"; amp: number }>({
+    active: false, start: 0, dur: 0, arm: "both", amp: 0,
+  });
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -139,23 +145,66 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, 0.05);
     lookAtTarget.current.position.z = targetZ;
 
-    // 発話中のジェスチャー: 喋ってる間だけ腕を揺らす。周波数を左右・複数重ねて機械的な繰り返しを避ける
+    // 発話中のジェスチャー: 常時の揺れは控えめにして、代わりに不規則な間隔で
+    // 左手/右手/両手のどれかがランダムに「ここぞ」と動くバーストを起こす（人間の身振りに近い間欠性）
     const speaking = speakingRef?.current ?? false;
     const { lArm, rArm, lElbow, rElbow } = gestureBones.current;
     if (lArm && rArm && lElbow && rElbow) {
       if (speaking) {
+        if (!wasSpeaking.current) {
+          // 喋り始めた瞬間にリズムを再抽選 → 毎回違う揺れ方になる
+          gestureClock.current = 0;
+          gestureProfile.current = {
+            freqL: 1.1 + Math.random() * 1.3,
+            freqR: 1.1 + Math.random() * 1.3,
+            phaseL: Math.random() * Math.PI * 2,
+            phaseR: Math.random() * Math.PI * 2,
+          };
+          nextBurstAt.current = 0.2 + Math.random() * 0.8;
+          burst.current.active = false;
+        }
         gestureClock.current += delta;
         const gt = gestureClock.current;
-        const lWave = Math.sin(gt * 1.6 + gestureSeed.current) * 0.5 + Math.sin(gt * 0.7) * 0.2;
-        const rWave = Math.sin(gt * 1.3 + gestureSeed.current + 1.7) * 0.5 + Math.sin(gt * 0.5 + 2) * 0.2;
-        lArm.rotation.z = -1.2 + lWave * 0.25;
-        lArm.rotation.x = 0.1 - Math.max(0, lWave) * 0.3;
-        lElbow.rotation.z = -0.15 + lWave * 0.35;
-        rArm.rotation.z = 1.2 - rWave * 0.25;
-        rArm.rotation.x = 0.1 - Math.max(0, rWave) * 0.3;
-        rElbow.rotation.z = 0.15 - rWave * 0.35;
+        const { freqL, freqR, phaseL, phaseR } = gestureProfile.current;
+
+        // 常時の揺れは小さめ（バーストの土台になる程度）
+        const lWave = Math.sin(gt * freqL + phaseL) * 0.15;
+        const rWave = Math.sin(gt * freqR + phaseR) * 0.15;
+
+        // ランダム間隔のバースト: 発生タイミング・持続時間・強さ・どの手かを毎回抽選
+        if (!burst.current.active && gt >= nextBurstAt.current) {
+          const r = Math.random();
+          burst.current = {
+            active: true,
+            start: gt,
+            dur: 0.3 + Math.random() * 0.4,
+            arm: r < 0.4 ? "l" : r < 0.8 ? "r" : "both",
+            amp: 0.5 + Math.random() * 0.6,
+          };
+        }
+        let lBurst = 0, rBurst = 0;
+        if (burst.current.active) {
+          const bt = (gt - burst.current.start) / burst.current.dur;
+          if (bt >= 1) {
+            burst.current.active = false;
+            nextBurstAt.current = gt + 0.5 + Math.random() * 1.6; // 次のバーストまでも毎回ランダム
+          } else {
+            const envelope = Math.sin(bt * Math.PI); // 上がって下がる一発の身振り
+            const v = envelope * burst.current.amp;
+            if (burst.current.arm === "l" || burst.current.arm === "both") lBurst = v;
+            if (burst.current.arm === "r" || burst.current.arm === "both") rBurst = v;
+          }
+        }
+
+        lArm.rotation.z = -1.2 + lWave * 0.25 + lBurst * 0.3;
+        lArm.rotation.x = 0.1 - Math.max(0, lWave) * 0.3 - lBurst * 0.3;
+        lElbow.rotation.z = -0.15 + lWave * 0.35 + lBurst * 0.55;
+        rArm.rotation.z = 1.2 - rWave * 0.25 - rBurst * 0.3;
+        rArm.rotation.x = 0.1 - Math.max(0, rWave) * 0.3 - rBurst * 0.3;
+        rElbow.rotation.z = 0.15 - rWave * 0.35 - rBurst * 0.55;
       } else {
         gestureClock.current = 0;
+        burst.current.active = false;
         // 喋ってない間は基本姿勢へ滑らかに戻す
         lArm.rotation.z = lerp(lArm.rotation.z, -1.2, 0.05);
         lArm.rotation.x = lerp(lArm.rotation.x, 0.1, 0.05);
@@ -164,6 +213,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         rArm.rotation.x = lerp(rArm.rotation.x, 0.1, 0.05);
         rElbow.rotation.z = lerp(rElbow.rotation.z, 0.15, 0.05);
       }
+      wasSpeaking.current = speaking;
     }
 
     const em = vrm.expressionManager;
