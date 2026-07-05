@@ -2,11 +2,14 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from "@pixiv/three-vrm-animation";
+import type { VRMAnimation } from "@pixiv/three-vrm-animation";
 import * as THREE from "three";
 import { getDistanceZone } from "../hooks/useFaceDetection";
 import type { FaceCenter, FaceExpression, DistanceZone } from "../hooks/useFaceDetection";
 
 const MODEL_URL = "/avatar/sample.vrm";
+const WALK_URL = "/avatar/walk.vrma";
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -72,6 +75,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const burst = useRef<{ active: boolean; start: number; dur: number; arm: "l" | "r" | "both"; amp: number }>({
     active: false, start: 0, dur: 0, arm: "both", amp: 0,
   });
+  // 歩行アニメーション(脚のみ。腕はこの下の手続き型ジェスチャーが担当)
+  const walkMixer = useRef<THREE.AnimationMixer | null>(null);
+  const walkAction = useRef<THREE.AnimationAction | null>(null);
+  const walkClipDuration = useRef(1);
+  const walkWeight = useRef(0);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -111,9 +119,48 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     };
   }, []);
 
+  // 歩行モーション(脚のみ)の読み込み。VRM本体のロード後、VRMインスタンスに合わせてクリップを作る
+  useEffect(() => {
+    if (!vrm) return;
+    let alive = true;
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+    loader.load(
+      WALK_URL,
+      (gltf) => {
+        if (!alive) return;
+        const vrmAnimations = gltf.userData.vrmAnimations as VRMAnimation[] | undefined;
+        const vrmAnimation = vrmAnimations?.[0];
+        if (!vrmAnimation) return;
+
+        const clip = createVRMAnimationClip(vrmAnimation, vrm);
+        const mixer = new THREE.AnimationMixer(vrm.scene);
+        const action = mixer.clipAction(clip);
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.play();
+        action.setEffectiveWeight(0);
+
+        walkMixer.current = mixer;
+        walkAction.current = action;
+        walkClipDuration.current = clip.duration || 1;
+      },
+      undefined,
+      (e) => console.error("walk VRMA load error:", e)
+    );
+
+    return () => {
+      alive = false;
+    };
+  }, [vrm]);
+
   useFrame((state, delta) => {
     if (!vrm) return;
     const t = state.clock.elapsedTime;
+
+    // 歩行クリップ(脚)の再生。手続き型の各処理より先に評価し、
+    // 腕・脊椎など手続き型が管理するボーンは後段の処理で上書きされるようにする
+    walkMixer.current?.update(delta);
 
     // 呼吸（わずかに上下）
     vrm.scene.position.y = Math.sin(t * 1.1) * 0.004;
@@ -121,11 +168,17 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // 接近演出: 来場者が近いほどキャラが「覗き込む」
     // 体ごとの前後移動は控えめ＋上半身の前傾で寄る → 頭が見切れない
     const zone = getDistanceZone(faceSizeRef?.current ?? 0);
-    approach.current = lerp(approach.current, ZONE_APPROACH[zone], APPROACH_LERP);
+    const approachTarget = ZONE_APPROACH[zone];
+    approach.current = lerp(approach.current, approachTarget, APPROACH_LERP);
     const a = approach.current;
     vrm.scene.position.z = lerp(APPROACH_Z_BACK, APPROACH_Z_FRONT, a);
     const spine = vrm.humanoid?.getNormalizedBoneNode("spine");
     if (spine) spine.rotation.x = a * LEAN_MAX;
+
+    // 歩行中判定: 接近度がまだ目標に追いついてない(=前進中)間だけ脚クリップを効かせる
+    const isWalking = approachTarget > approach.current + 0.03;
+    walkWeight.current = lerp(walkWeight.current, isWalking ? 1 : 0, 0.06);
+    walkAction.current?.setEffectiveWeight(walkWeight.current);
 
     // 視線追従: 複数人いれば順番にスキャン、1人ならその人を見る
     const all = allFaceCentersRef?.current ?? [];
@@ -202,10 +255,22 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         rArm.rotation.z = 1.2 - rWave * 0.25 - rBurst * 0.3;
         rArm.rotation.x = 0.1 - Math.max(0, rWave) * 0.3 - rBurst * 0.3;
         rElbow.rotation.z = 0.15 - rWave * 0.35 - rBurst * 0.55;
+      } else if (isWalking && walkAction.current) {
+        gestureClock.current = 0;
+        burst.current.active = false;
+        // 歩行中は脚のクリップに合わせて逆側の腕を振る(左脚前→右腕前、の対角振り)
+        const phase = (walkAction.current.time / walkClipDuration.current) * Math.PI * 2;
+        const swing = Math.sin(phase) * 0.35 * walkWeight.current;
+        lArm.rotation.z = -1.2 - swing * 0.25;
+        lArm.rotation.x = 0.1 + swing * 0.3;
+        lElbow.rotation.z = -0.15 - swing * 0.2;
+        rArm.rotation.z = 1.2 + swing * 0.25;
+        rArm.rotation.x = 0.1 - swing * 0.3;
+        rElbow.rotation.z = 0.15 + swing * 0.2;
       } else {
         gestureClock.current = 0;
         burst.current.active = false;
-        // 喋ってない間は基本姿勢へ滑らかに戻す
+        // 喋ってない・歩いてない間は基本姿勢へ滑らかに戻す
         lArm.rotation.z = lerp(lArm.rotation.z, -1.2, 0.05);
         lArm.rotation.x = lerp(lArm.rotation.x, 0.1, 0.05);
         lElbow.rotation.z = lerp(lElbow.rotation.z, -0.15, 0.05);
