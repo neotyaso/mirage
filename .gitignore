@@ -6,3 +6,4 @@ dist-ssr
 *.log
 .venv
 __pycache__
+*.blend1
