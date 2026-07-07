@@ -1,9 +1,28 @@
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import type * as THREE from "three";
 import { Avatar } from "../components/Avatar";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
+
+// 背景検証用: public/scene/room.glbを仮読み込みして見た目を確認する(採用が決まったら本実装に移す)
+function RoomPreview() {
+  const [scene, setScene] = useState<THREE.Group | null>(null);
+  useEffect(() => {
+    let alive = true;
+    new GLTFLoader().load(
+      "/scene/room.glb",
+      (gltf) => { if (alive) setScene(gltf.scene); },
+      undefined,
+      (e) => console.error("room.glb load error:", e)
+    );
+    return () => { alive = false; };
+  }, []);
+  if (!scene) return null;
+  return <primitive object={scene} />;
+}
 
 // 実カメラ・実LLMなしでアニメーションだけ手動トリガーして見るための試験用ページ。
 // 本番App.tsxと同じrefインターフェースをAvatarに渡し、値はUIのボタン/スライダーから流し込む。
@@ -59,6 +78,8 @@ export function Playground() {
         <Grid args={[10, 10]} position={[0, 0, 0]} cellColor="#334" sectionColor="#556" />
         <OrbitControls target={[0, 1, 0]} />
         <VolumeDriver speaking={speaking} volumeRef={volumeRef} />
+
+        <RoomPreview />
 
         <Suspense fallback={null}>
           <Avatar
