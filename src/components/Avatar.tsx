@@ -123,7 +123,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
-  const activeAction = useRef<{ tag: "nod" | "tilt"; t: number } | null>(null);
+  const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -211,7 +211,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const action = actionRef?.current;
     if (action && action.id !== lastActionId.current) {
       lastActionId.current = action.id;
-      activeAction.current = { tag: action.tag, t: 0 };
+      // tiltは左右どちらに傾げるかを毎回ランダムに決める（nodは前後のみなので常に1）
+      const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
+      activeAction.current = { tag: action.tag, t: 0, dir };
     }
     if (activeAction.current && neckBone.current) {
       activeAction.current.t += delta;
@@ -226,7 +228,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         if (activeAction.current.tag === "nod") {
           neckBone.current.rotation.x = wave * NOD_ANGLE;
         } else {
-          neckBone.current.rotation.z = wave * TILT_ANGLE;
+          neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }
       }
     }
