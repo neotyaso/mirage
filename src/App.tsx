@@ -76,6 +76,16 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
   near: 9000,
 };
 
+// 視線を外すと構うセリフ
+const LOOK_AWAY_LINES = [
+  "ねえねえ、こっち見てよ〜！",
+  "あれ、目そらした？さみしいって！",
+  "ちょっとちょっと、まだ話してる途中だよ〜",
+];
+const LOOK_AWAY_YAW_THRESHOLD = 0.5; // ラジアン（約28度）。これ以上そっぽを向いたら「外した」判定
+const LOOK_AWAY_SUSTAIN_MS = 1500;   // これだけ継続してそっぽを向いたら反応（一瞬の視線移動では反応しない）
+const LOOK_AWAY_COOLDOWN_MS = 15000; // 連発しないためのクールダウン
+
 // AivisSpeech (VOICEVOX互換 API)
 // スピーカーIDは GET http://localhost:10101/speakers で確認して変更
 const AIVIS_URL = "http://localhost:10101";
@@ -84,9 +94,10 @@ const SPEAKER_ID = 888753760;
 export default function App() {
   const speakingRef = useRef(false);
   const volumeRef = useRef(0);
-  const { state: convState, log, startConversation, stopConversation, resetHistory } = useConversation(speakingRef, volumeRef);
+  const panRef = useRef(0); // 空間オーディオ: -1(左)〜1(右)。来場者の画面上の左右位置に追従
+  const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
+  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
 
   const [started, setStarted] = useState(false);
@@ -210,6 +221,9 @@ export default function App() {
   // 「新規来場者」扱いの呼び込みセリフを鳴らさず静かに会話を再開する（2人目が現れて一瞬顔が隠れた時などに
   // 「ねえねえ話していかない？」が会話に割り込む不自然さを防ぐ）
   const silentResumeRef = useRef(false);
+  // 視線を外すと構う: そっぽを向いた継続時間とクールダウンの管理
+  const lookAwaySinceRef = useRef(0);
+  const lastLookAwayCallRef = useRef(0);
   useEffect(() => {
     const id = setInterval(() => {
       const p = presentRef.current;
@@ -217,6 +231,10 @@ export default function App() {
       setPresent(p);
       setFaces(faceCountRef.current);
       setZone(z);
+
+      // 空間オーディオ: 来場者の画面上の左右位置に合わせて声のパンを更新（OffAxisCameraと同じ符号規則）
+      const fc = faceCenterRef.current;
+      panRef.current = fc ? (fc.x - 0.5) * 2 : 0;
 
       if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
         const now = performance.now();
@@ -235,6 +253,28 @@ export default function App() {
         }
       }
       wasPresent.current = p;
+
+      // 視線を外すと構う: mid/near で来場者と向き合ってる最中にそっぽを向かれたら反応する。
+      // 喋ってる最中・LLM応答中に割り込まないよう !speakingRef.current && convState !== "thinking" で守る
+      if (
+        started && !paused &&
+        (z === "mid" || z === "near") &&
+        !speakingRef.current && convState !== "thinking" &&
+        Math.abs(faceYawRef.current) > LOOK_AWAY_YAW_THRESHOLD
+      ) {
+        const now = performance.now();
+        if (lookAwaySinceRef.current === 0) lookAwaySinceRef.current = now;
+        if (
+          now - lookAwaySinceRef.current > LOOK_AWAY_SUSTAIN_MS &&
+          now - lastLookAwayCallRef.current > LOOK_AWAY_COOLDOWN_MS
+        ) {
+          speak(LOOK_AWAY_LINES[Math.floor(Math.random() * LOOK_AWAY_LINES.length)]);
+          lastLookAwayCallRef.current = now;
+          lookAwaySinceRef.current = 0;
+        }
+      } else {
+        lookAwaySinceRef.current = 0;
+      }
 
       if (p) lastPresentAtRef.current = performance.now();
       if (started && !paused) {
@@ -272,7 +312,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <Room />
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} />
         </Suspense>
       </Canvas>
 

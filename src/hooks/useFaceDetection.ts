@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { Matrix4, Quaternion, Euler, Vector3 } from "three";
 
 const ABSENCE_GRACE_MS = 600;
 
@@ -30,6 +31,7 @@ export function useFaceDetection() {
   const faceCountRef = useRef(0);
   const faceCenterRef = useRef<FaceCenter | null>(null);
   const faceSizeRef = useRef(0);
+  const faceYawRef = useRef(0); // 主対象の頭の左右向き（ラジアン。0=正面、絶対値が大きいほどそっぽを向いている）
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const [ready, setReady] = useState(false);
@@ -42,6 +44,12 @@ export function useFaceDetection() {
     let stopped = false;
     let lastVideoTime = -1;
     let lastSeen = 0;
+    // yaw抽出用に使い回すワークオブジェクト（毎フレームnewしない）
+    const yawMatrix = new Matrix4();
+    const yawPos = new Vector3();
+    const yawQuat = new Quaternion();
+    const yawScale = new Vector3();
+    const yawEuler = new Euler();
     // MediaPipeのfaceLandmarks配列は複数人検出時、フレームごとに並び順が入れ替わりうる
     // （landmarks[0]が別人になる）。素直にindex 0を使うと、2人目が現れた瞬間に
     // カメラ追従・距離判定・視線の基準が別人に急に切り替わってしまう。
@@ -75,6 +83,7 @@ export function useFaceDetection() {
 
         const landmarks = result.faceLandmarks ?? [];
         const blendshapes = result.faceBlendshapes ?? [];
+        const transforms = result.facialTransformationMatrixes ?? [];
         const count = landmarks.length;
         faceCountRef.current = count;
 
@@ -118,6 +127,17 @@ export function useFaceDetection() {
           faceCenterRef.current = centers[primaryIdx] ?? null;
           faceSizeRef.current = widths[primaryIdx] ?? 0;
 
+          // 頭の向き(yaw)を主対象の顔変換行列から抽出（そっぽを向いたか判定するため）
+          const matrixData = transforms[primaryIdx]?.data;
+          if (matrixData) {
+            yawMatrix.fromArray(matrixData);
+            yawMatrix.decompose(yawPos, yawQuat, yawScale);
+            yawEuler.setFromQuaternion(yawQuat, "YXZ");
+            faceYawRef.current = yawEuler.y;
+          } else {
+            faceYawRef.current = 0;
+          }
+
           // blendshapesから表情スコアを抽出（主対象と同じ人物のインデックス）
           if (blendshapes.length > primaryIdx) {
             const cats = blendshapes[primaryIdx].categories;
@@ -130,6 +150,7 @@ export function useFaceDetection() {
           primaryCenter = null;
           faceCenterRef.current = null;
           faceSizeRef.current = 0;
+          faceYawRef.current = 0;
           allFaceCentersRef.current = [];
           expressionRef.current = { smile: 0, surprised: 0 };
         }
@@ -162,6 +183,7 @@ export function useFaceDetection() {
           runningMode: "VIDEO",
           numFaces: 4,
           outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: true,
         });
         if (stopped) return;
 
@@ -187,6 +209,7 @@ export function useFaceDetection() {
     faceCountRef,
     faceCenterRef,
     faceSizeRef,
+    faceYawRef,
     allFaceCentersRef,
     expressionRef,
     ready,

@@ -31,6 +31,12 @@ export function Playground() {
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
   const faceSizeRef = useRef(0);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
+  const actionRef = useRef<{ tag: "nod" | "tilt"; id: number } | null>(null);
+  const actionIdRef = useRef(0);
+
+  function triggerAction(tag: "nod" | "tilt") {
+    actionRef.current = { tag, id: ++actionIdRef.current };
+  }
 
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [speaking, setSpeaking] = useState(false);
@@ -71,6 +77,7 @@ export function Playground() {
             allFaceCentersRef={allFaceCentersRef}
             expressionRef={expressionRef}
             faceSizeRef={faceSizeRef}
+            actionRef={actionRef}
           />
         </Suspense>
       </Canvas>
@@ -96,6 +103,18 @@ export function Playground() {
           <button onClick={toggleSpeaking} style={{ ...btnStyle, background: speaking ? "#ef4444" : "#374151" }}>
             {speaking ? "■ 停止" : "▶ 話す"}
           </button>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>行動タグ（手続き型アクション）</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => triggerAction("nod")} style={{ ...btnStyle, background: "#374151" }}>
+              頷く
+            </button>
+            <button onClick={() => triggerAction("tilt")} style={{ ...btnStyle, background: "#374151" }}>
+              首をかしげる
+            </button>
+          </div>
         </div>
 
         <div style={rowStyle}>
