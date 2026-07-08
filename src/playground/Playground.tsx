@@ -33,6 +33,7 @@ export function Playground() {
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const actionRef = useRef<{ tag: "nod" | "tilt"; id: number } | null>(null);
   const actionIdRef = useRef(0);
+  const sittingRef = useRef(false);
 
   function triggerAction(tag: "nod" | "tilt") {
     actionRef.current = { tag, id: ++actionIdRef.current };
@@ -42,6 +43,13 @@ export function Playground() {
   const [speaking, setSpeaking] = useState(false);
   const [smile, setSmile] = useState(0);
   const [surprised, setSurprised] = useState(0);
+  const [sitting, setSitting] = useState(false);
+
+  function toggleSitting() {
+    const next = !sitting;
+    setSitting(next);
+    sittingRef.current = next;
+  }
 
   function selectZone(z: DistanceZone) {
     setZone(z);
@@ -78,6 +86,7 @@ export function Playground() {
             expressionRef={expressionRef}
             faceSizeRef={faceSizeRef}
             actionRef={actionRef}
+            sittingRef={sittingRef}
           />
         </Suspense>
       </Canvas>
@@ -102,6 +111,13 @@ export function Playground() {
           <span style={labelStyle}>発話中（ジェスチャー・リップシンク）</span>
           <button onClick={toggleSpeaking} style={{ ...btnStyle, background: speaking ? "#ef4444" : "#374151" }}>
             {speaking ? "■ 停止" : "▶ 話す"}
+          </button>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>座りモーション（Mixamoリターゲット・プレビュー）</span>
+          <button onClick={toggleSitting} style={{ ...btnStyle, background: sitting ? "#8b5cf6" : "#374151" }}>
+            {sitting ? "■ 起立" : "▶ 座る"}
           </button>
         </div>
 
