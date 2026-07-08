@@ -2,6 +2,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Avatar } from "./components/Avatar";
+import { Room } from "./components/Room";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
@@ -270,6 +271,7 @@ export default function App() {
         <OffAxisCamera faceCenterRef={faceCenterRef} />
 
         <Suspense fallback={null}>
+          <Room />
           <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} />
         </Suspense>
       </Canvas>
