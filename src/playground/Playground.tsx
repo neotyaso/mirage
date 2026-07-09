@@ -2,7 +2,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
-import { Avatar } from "../components/Avatar";
+import { Avatar, DEFAULT_SIT_POSE } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
@@ -37,17 +37,38 @@ export function Playground() {
   const faceYawRef = useRef(0);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const sittingRef = useRef(false);
+  const sitPoseRef = useRef({ ...DEFAULT_SIT_POSE });
 
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [speaking, setSpeaking] = useState(false);
   const [smile, setSmile] = useState(0);
   const [surprised, setSurprised] = useState(0);
   const [sitting, setSitting] = useState(false);
+  const [sitPose, setSitPose] = useState(sitPoseRef.current);
 
   function toggleSitting() {
     const next = !sitting;
     setSitting(next);
     sittingRef.current = next;
+  }
+
+  function updateSitPose(key: keyof typeof sitPoseRef.current, value: number) {
+    sitPoseRef.current = { ...sitPoseRef.current, [key]: value };
+    setSitPose(sitPoseRef.current);
+  }
+
+  function resetSitPose() {
+    sitPoseRef.current = { ...DEFAULT_SIT_POSE };
+    setSitPose(sitPoseRef.current);
+  }
+
+  function copySitPose() {
+    const p = sitPoseRef.current;
+    const text =
+      `const SIT_ARM = { z: ${p.armZ}, x: ${p.armX} };\n` +
+      `const SIT_ELBOW = { z: ${p.elbowZ} };\n` +
+      `// shoulder: x=${p.shoulderX}, z=${p.shoulderZ}`;
+    navigator.clipboard.writeText(text);
   }
 
   // ---- カメラ(実顔検出) ----
@@ -138,6 +159,7 @@ export function Playground() {
             faceSizeRef={faceSizeRef}
             actionRef={conv.actionRef}
             sittingRef={sittingRef}
+            sitPoseRef={sitPoseRef}
           />
         </Suspense>
       </Canvas>
@@ -221,11 +243,38 @@ export function Playground() {
         </div>
 
         <div style={rowStyle}>
-          <span style={labelStyle}>座りモーション（Mixamoリターゲット・プレビュー）</span>
+          <span style={labelStyle}>座りモーション（常時座り・姿勢調整プレビュー）</span>
           <button onClick={toggleSitting} style={{ ...btnStyle, background: sitting ? "#8b5cf6" : "#374151" }}>
-            {sitting ? "■ 起立" : "▶ 座る"}
+            {sitting ? "■ 起立" : "▶ 座る（椅子に固定）"}
           </button>
         </div>
+
+        {sitting && (
+          <div style={{ ...rowStyle, background: "rgba(139,92,246,0.12)", padding: "8px 10px", borderRadius: 8 }}>
+            <span style={labelStyle}>座り姿勢の調整（腕・肘・肩）</span>
+            {(
+              [
+                { key: "armX", label: "腕・前後", min: -1.5, max: 1.5 },
+                { key: "armZ", label: "腕・横", min: 0.3, max: 1.8 },
+                { key: "elbowZ", label: "肘", min: -0.3, max: 1.5 },
+                { key: "shoulderX", label: "肩・前後", min: -0.5, max: 0.5 },
+                { key: "shoulderZ", label: "肩・横", min: -0.5, max: 0.5 },
+              ] as const
+            ).map(({ key, label, min, max }) => (
+              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>{label} {sitPose[key].toFixed(2)}</span>
+                <input
+                  type="range" min={min} max={max} step={0.01} value={sitPose[key]}
+                  onChange={(e) => updateSitPose(key, Number(e.target.value))}
+                />
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <button onClick={resetSitPose} style={{ ...btnStyle, background: "#374151" }}>リセット</button>
+              <button onClick={copySitPose} style={{ ...btnStyle, background: "#374151" }}>値をコピー</button>
+            </div>
+          </div>
+        )}
 
         <div style={rowStyle}>
           <span style={labelStyle}>行動タグ（手続き型アクション）</span>
