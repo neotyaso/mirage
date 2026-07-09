@@ -68,7 +68,7 @@ const SIT_SETTLE_LERP = 0.08;
 const SIT_Y_OFFSET = -0.35; // Mixamo側の椅子とroom.glbの椅子で座面高さが違うための補正(実機確認で調整)
 const SIT_DURATION_MIN = 6; // 秒。座ってから立ち上がるまでの長さ
 const SIT_DURATION_MAX = 14;
-const GO_SIT_CHANCE = 0.45; // 徘徊の一時停止のたびに椅子へ向かう確率
+const GO_SIT_CHANCE = 0.35; // 徘徊の一時停止のたびに椅子へ向かう確率
 
 // 徘徊・移動中に障害物(机・椅子)へ直進してめり込まないよう、近づいたら押し返す。
 // 椅子に座りに行く時は椅子自体は避けたい障害物から除外する(obstaclesで切り替え)
@@ -121,8 +121,8 @@ const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 // 座り中の腕(手続き型・固定ポーズ)。Mixamoの座りモーションは腕に「髪を触る」ような
 // ジェスチャーが入っていて不自然だったため、腕だけは膝の上に置く固定ポーズで上書きする
 // 体の横に自然に下ろす(立ち姿勢の基本ポーズとほぼ同じ値。前や後ろに動かすと不安定だったため確実な方を採用)
-const SIT_ARM = { z: 1.2, x: 0.1 };   // 右腕基準。左は z を反転
-const SIT_ELBOW = { z: 0.15 };        // 右肘基準。左は z を反転
+const SIT_ARM = { z: 1.15, x: 0.55 };   // 右腕基準。左は z を反転
+const SIT_ELBOW = { z: 0.55 };          // 右肘基準。左は z を反転
 
 /**
  * VRMアバターを全身表示する。
@@ -151,6 +151,8 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     rArm?: THREE.Object3D | null;
     lElbow?: THREE.Object3D | null;
     rElbow?: THREE.Object3D | null;
+    lShoulder?: THREE.Object3D | null;
+    rShoulder?: THREE.Object3D | null;
   }>({});
   const gestureClock = useRef(0);
   const wasSpeaking = useRef(false);
@@ -197,12 +199,14 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const rArm = h?.getNormalizedBoneNode("rightUpperArm");
         const lElbow = h?.getNormalizedBoneNode("leftLowerArm");
         const rElbow = h?.getNormalizedBoneNode("rightLowerArm");
+        const lShoulder = h?.getNormalizedBoneNode("leftShoulder");
+        const rShoulder = h?.getNormalizedBoneNode("rightShoulder");
         if (lArm) { lArm.rotation.z = -1.2; lArm.rotation.x = 0.1; }
         if (rArm) { rArm.rotation.z =  1.2; rArm.rotation.x = 0.1; }
         // 肘を軽く曲げる（より自然に）
         if (lElbow) lElbow.rotation.z = -0.15;
         if (rElbow) rElbow.rotation.z =  0.15;
-        gestureBones.current = { lArm, rArm, lElbow, rElbow };
+        gestureBones.current = { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder };
         neckBone.current = h?.getNormalizedBoneNode("neck") ?? null;
 
         if (alive) setVrm(loaded);
@@ -463,7 +467,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // 発話中のジェスチャー: 腕は基本姿勢のまま、体だけ横揺れさせる
     // (腕を交互に上げる仕草・腕組み等のポーズ切替はどちらも不自然だったため撤去)
     const speaking = speakingRef?.current ?? false;
-    const { lArm, rArm, lElbow, rElbow } = gestureBones.current;
+    const { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder } = gestureBones.current;
     if (lArm && rArm && lElbow && rElbow) {
       if (speaking) {
         if (!wasSpeaking.current) {
@@ -500,6 +504,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         lElbow.rotation.set(0, 0, -SIT_ELBOW.z);
         rArm.rotation.set(SIT_ARM.x, 0, SIT_ARM.z);
         rElbow.rotation.set(0, 0, SIT_ELBOW.z);
+        // sitクリップは肩(鎖骨)ボーンも動かしており、upperArm/lowerArmだけ上書きしても
+        // 肩が持ち上がったまま→腕全体が横に流れて見える原因になっていたのでゼロに戻す
+        if (lShoulder) lShoulder.rotation.set(0, 0, 0);
+        if (rShoulder) rShoulder.rotation.set(0, 0, 0);
       } else {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
