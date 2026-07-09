@@ -8,12 +8,6 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    // onnxruntime-web(YOLO推論)はwasmグルーコード(.mjs)を実行時にpublic/から動的importする
-    // 独自の仕組みを持っており、Viteの通常のモジュール変換と衝突するため除外・静的アセット扱いにする
-    assetsInclude: ["**/*.onnx"],
-    optimizeDeps: {
-      exclude: ["onnxruntime-web"],
-    },
     server: {
       host: true,
       proxy: {

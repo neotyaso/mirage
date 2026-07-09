@@ -284,26 +284,17 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
    - 当初`App.tsx`にnear接近中の自動バックグラウンド発火として実装したが、本人の意向で**コマンド起動制のモードに変更**。App.tsx側の自動発火コードは撤去し、`Playground.tsx`に「ゲーム開始」ボタン→モード突入→（カメラが無いため）「見つめる」チェックボックスで視線をシミュレート→3秒キープで勝利、の一連をコマンド操作で再現できる形にした
    - 本番`App.tsx`でどう起動させるか（音声コマンド／ボタン等）は未定・別途検討
 
-### 物体検知・持ち物当てマジック【✅完了・2026-07-09】
-来場者の持ち物を検知して「心を読んでる」風に言い当てる演出。COCO-SSDでなく本人の希望でYOLOv8nを採用。
+### 物体検知・持ち物当てマジック【❌撤去・2026-07-09】
+来場者の持ち物を検知して「心を読んでる」風に言い当てる演出として、YOLOv8n(`onnxruntime-web`)を導入・
+Playground.tsxにコマンド起動モードとして実装したが、方向性の再検討の結果**機能ごと不要と判断し撤去**。
+（キャラクター・会話シナリオ側の作り込みを優先する方針に変更したため）
 
-**YOLOv8n導入**
-- `uv run --with ultralytics`で公式パッケージから`yolov8n.onnx`をエクスポート（opset=12、simplify、12.3MB）。GitHub上の非公式配布物ではなく公式`ultralytics`パッケージ経由で生成し、ライセンス・信頼性を担保
-- `onnxruntime-web`を追加。`src/hooks/useObjectDetection.ts`でモデルロード・推論・後処理（レターボックス前処理、NMSは自前実装）を実装。`useFaceDetection`と同じ`videoRef`を共有し、カメラストリームは1つだけ
-- 出力形状`[1,84,8400]`（4=box, 80=COCOクラス、objectness無し）を素のonnxruntimeでPython検証してから同じロジックをJS移植（bus.jpgでbus/personが正しいクラスID・妥当なスコアでクラスタリングすることを確認）
-- 検知間隔は800ms（MediaPipeより重いため毎フレームでなく間引き）
-
-**Vite dev serverとの衝突（重要な既知の制約）**
-- onnxruntime-webはwasmグルーコード(`.mjs`)を実行時に独自の動的importで読み込む仕組みを持っており、Viteの「`/public`配下のJSモジュールをimport()経由で読むことを禁止」ガードと衝突し、`npm run dev`だとエラーになる
-- **`vite build`の本番ビルドでは発生しない**。それどころか本番ビルドは`node_modules`のonnxruntime-webから自動でwasmをバンドル・ハッシュ付きURL解決してくれる（`dist/assets/ort-wasm-simd-threaded.jsep-[hash].wasm`）ため、`public/onnx/`への自前コピーは不要と判明（`vite preview`で動作確認済み、26MB超の重複バイナリをリポジトリに入れずに済んだ）。`useObjectDetection.ts`では`import.meta.env.DEV`の時だけjsdelivr CDNへ`wasmPaths`を上書きし、本番はViteのデフォルト解決に任せる
-- `vite.config.ts`に`assetsInclude: ["**/*.onnx"]`と`optimizeDeps.exclude: ["onnxruntime-web"]`は保険として残置（無くても動く可能性はあるが実害はないので）
-- 本番展示では自前ホスティングが使われるためオフライン動作は維持される
-
-**持ち物当てマジック演出（方針転換2026-07-09: コマンド起動制に変更）**
-- 当初`App.tsx`にnear接近中の自動バックグラウンド発火（確率50%・クールダウン等）として実装したが、本人の意向で**コマンド起動制のモードに変更**。App.tsx側の自動発火コード・`useObjectDetection`呼び出し・デバッグHUD表示は全て撤去
-- `MAGIC_TRICK_CLASSES`（スマホ・リュック・カバン・傘・ボトル・カップ・本・パソコン・スーツケース・ネクタイの10品目、日本語ラベル付き。COCO80クラスのうち展示会場で実際に持っていそうな品目だけに絞り誤検知時の気まずさを回避）は`Playground.tsx`に移設
-- `Playground.tsx`: 「マジックモードON」ボタン→モード突入→（カメラが無いため）品目ボタン（「スマホを見せる」等）を押すとその場でトリック発動、の一連をコマンド操作で再現。自動抽選・クールダウンは撤去（コマンドで明示的に呼んだものを渋る意味がないため）
-- `src/hooks/useObjectDetection.ts`（YOLOv8n推論本体）とモデルファイルはそのまま現存。本番`App.tsx`でどう起動させるか（音声コマンド／ボタン等）は未定・別途検討
+- 撤去したもの: `src/hooks/useObjectDetection.ts`、`public/models/yolov8n.onnx`、`onnxruntime-web`依存、
+  `vite.config.ts`のonnx関連設定（`assetsInclude`/`optimizeDeps.exclude`）、Playground.tsxのマジックモードUI一式
+- 技術検証で分かったこと（再挑戦する時のためのメモ）:
+  - YOLOv8nは`uv run --with ultralytics`で公式パッケージから直接エクスポートするのが確実（opset=12, simplify）
+  - `onnxruntime-web`はwasmグルーコードの動的importがVite dev serverと衝突するが、**本番ビルド(`vite build`)では発生しない**上、`node_modules`から自動バンドルされるため自前でのwasmホスティングは不要（開発時だけCDNにフォールバックすれば足りる）
+  - 出力形状`[1,84,8400]`（box4+COCO80クラス、objectness無し）のパース処理はPythonで素のonnxruntimeを使って先に検証してからJS移植する、という進め方が有効だった
 
 ### 会話シナリオ・来場者ジャーニー【2026-07-09見直し】
 既存のセリフ群（呼び込みLINES/GROUP_LINES、NUDGE_LINES、LOOK_AWAY_LINES等）を並べて流れを確認したところ、

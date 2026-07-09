@@ -26,26 +26,6 @@ const EYE_CONTACT_LINES = [
   "見つめ合い勝負、あなたの勝ち！参りました〜！",
 ];
 
-// 持ち物当てマジック: コマンド起動制。YOLOの検知結果を「心を読んでる」風に言い当てる演出。
-// 誤検知で気まずくならないよう、展示会場で実際に持ってそうな品目だけに絞ってある
-const MAGIC_TRICK_CLASSES: Record<string, string> = {
-  "cell phone": "スマホ",
-  backpack: "リュック",
-  handbag: "カバン",
-  umbrella: "傘",
-  bottle: "飲み物のボトル",
-  cup: "カップ",
-  book: "本",
-  laptop: "パソコン",
-  suitcase: "スーツケース",
-  tie: "ネクタイ",
-};
-const MAGIC_TRICK_LINES = (item: string) => [
-  `ちょっと待って、あなたの心を読んでみるね…えいっ！…${item}、持ってるでしょ！当たった！？`,
-  `レムの目には全部お見通し！${item}、持ってきたよね？`,
-  `くんくん…これは${item}の匂いがする！持ってるでしょ、当たり！`,
-];
-
 function VolumeDriver({ speaking, volumeRef }: { speaking: boolean; volumeRef: React.MutableRefObject<number> }) {
   useFrame((state) => {
     volumeRef.current = speaking ? 0.35 + 0.35 * Math.abs(Math.sin(state.clock.elapsedTime * 10)) : 0;
@@ -118,24 +98,6 @@ export function Playground() {
     eyeGameSinceRef.current = 0;
     setEyeGameElapsed(0);
     if (next) setEyeGameResult("");
-  }
-
-  // マジックモード: "armed"でモードに入り、品目ボタンを押すとそれを検知したことにして発動、自動でモードを抜ける
-  const [magicArmed, setMagicArmed] = useState(false);
-  const [magicResult, setMagicResult] = useState("");
-
-  function toggleMagic() {
-    const next = !magicArmed;
-    setMagicArmed(next);
-    if (next) setMagicResult("");
-  }
-
-  function triggerMagicItem(className: string) {
-    if (!magicArmed) return;
-    const item = MAGIC_TRICK_CLASSES[className];
-    const lines = MAGIC_TRICK_LINES(item);
-    setMagicResult(lines[Math.floor(Math.random() * lines.length)]);
-    setMagicArmed(false);
   }
 
   function selectZone(z: DistanceZone) {
@@ -267,27 +229,6 @@ export function Playground() {
             </span>
           )}
           {eyeGameResult && <span style={resultStyle}>{eyeGameResult}</span>}
-        </div>
-
-        <div style={rowStyle}>
-          <span style={labelStyle}>マジックモード（コマンド起動・持ち物当て）</span>
-          <button onClick={toggleMagic} style={{ ...btnStyle, background: magicArmed ? "#ef4444" : "#374151" }}>
-            {magicArmed ? "■ モード終了" : "▶ マジックモードON"}
-          </button>
-          {magicArmed && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-              {Object.entries(MAGIC_TRICK_CLASSES).map(([cls, label]) => (
-                <button
-                  key={cls}
-                  onClick={() => triggerMagicItem(cls)}
-                  style={{ ...btnStyle, background: "#374151", fontSize: 11, padding: "4px 8px" }}
-                >
-                  {label}を見せる
-                </button>
-              ))}
-            </div>
-          )}
-          {magicResult && <span style={resultStyle}>{magicResult}</span>}
         </div>
       </div>
     </div>
