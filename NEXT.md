@@ -284,8 +284,25 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
    - `App.tsx`: near接近中に視線比率が中央寄り(`EYE_CONTACT_GAZE_RANGE`)かつ頭の向きも正面寄り(`EYE_CONTACT_YAW_THRESHOLD`、視線を外す判定より厳しめ)を3秒キープしたら「照れる」リアクション。目を外して仕切り直すまで連発しない
    - 実機での視線比率の精度・閾値は未検証（Playwrightのフェイクカメラでは顔自体が検出されないためクラッシュしないことのみ確認）
 
-### 物体検知・持ち物当てマジック【2026-07-09着手・進行中】
-来場者の持ち物を検知して「心を読んでる」風に言い当てる演出のアイデア。YOLOv8n(onnxruntime-web)導入から着手予定。未着手。
+### 物体検知・持ち物当てマジック【✅完了・2026-07-09】
+来場者の持ち物を検知して「心を読んでる」風に言い当てる演出。COCO-SSDでなく本人の希望でYOLOv8nを採用。
+
+**YOLOv8n導入**
+- `uv run --with ultralytics`で公式パッケージから`yolov8n.onnx`をエクスポート（opset=12、simplify、12.3MB）。GitHub上の非公式配布物ではなく公式`ultralytics`パッケージ経由で生成し、ライセンス・信頼性を担保
+- `onnxruntime-web`を追加。`src/hooks/useObjectDetection.ts`でモデルロード・推論・後処理（レターボックス前処理、NMSは自前実装）を実装。`useFaceDetection`と同じ`videoRef`を共有し、カメラストリームは1つだけ
+- 出力形状`[1,84,8400]`（4=box, 80=COCOクラス、objectness無し）を素のonnxruntimeでPython検証してから同じロジックをJS移植（bus.jpgでbus/personが正しいクラスID・妥当なスコアでクラスタリングすることを確認）
+- 検知間隔は800ms（MediaPipeより重いため毎フレームでなく間引き）
+
+**Vite dev serverとの衝突（重要な既知の制約）**
+- onnxruntime-webはwasmグルーコード(`.mjs`)を実行時に独自の動的importで読み込む仕組みを持っており、Viteの「`/public`配下のJSモジュールをimport()経由で読むことを禁止」ガードと衝突し、`npm run dev`だとエラーになる
+- **`vite build`の本番ビルドでは発生しない**。それどころか本番ビルドは`node_modules`のonnxruntime-webから自動でwasmをバンドル・ハッシュ付きURL解決してくれる（`dist/assets/ort-wasm-simd-threaded.jsep-[hash].wasm`）ため、`public/onnx/`への自前コピーは不要と判明（`vite preview`で動作確認済み、26MB超の重複バイナリをリポジトリに入れずに済んだ）。`useObjectDetection.ts`では`import.meta.env.DEV`の時だけjsdelivr CDNへ`wasmPaths`を上書きし、本番はViteのデフォルト解決に任せる
+- `vite.config.ts`に`assetsInclude: ["**/*.onnx"]`と`optimizeDeps.exclude: ["onnxruntime-web"]`は保険として残置（無くても動く可能性はあるが実害はないので）
+- 本番展示では自前ホスティングが使われるためオフライン動作は維持される
+
+**持ち物当てマジック演出**
+- `App.tsx`に`MAGIC_TRICK_CLASSES`（スマホ・リュック・カバン・傘・ボトル・カップ・本・パソコン・スーツケース・ネクタイの10品目、日本語ラベル付き）を定義。COCO80クラスのうち展示会場で実際に持っていそうな品目だけに絞り込み、誤検知時の気まずさを避けた
+- 信頼度0.6以上、near接近中、1来場につき最大2回、50%抽選、8秒クールダウンで「ちょっと待って、あなたの心を読んでみるね…えいっ！…スマホ、持ってるでしょ！」等を発話
+- Playwrightでモデルロード（`yolo: ok`）とエラー無発火のみ確認。実際の物体を使った検知精度・トリックの当たり具合は実機での検証が必要
 
 ### 会話シナリオ・来場者ジャーニー【2026-07-09見直し】
 既存のセリフ群（呼び込みLINES/GROUP_LINES、NUDGE_LINES、LOOK_AWAY_LINES等）を並べて流れを確認したところ、
