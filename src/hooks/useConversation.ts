@@ -18,10 +18,30 @@ const AIVIS_URL = "http://localhost:10101";
 const SPEAKER_ID = 888753760;
 
 // VAD パラメータ（展示で調整）
-const SPEECH_THRESHOLD = 18;     // 音量しきい値（0〜255）。静かな環境なら下げる
+// SPEECH_THRESHOLD/MIN_SPEECH_MSは元々18/300だったが、空調ノイズ等の環境音を「発話」と誤検知して
+// Whisperに渡してしまい、無音・ノイズからのハルシネーション（「ご視聴ありがとうございました」等、
+// 下記WHISPER_HALLUCINATION_PATTERNS参照）を誘発していたため引き上げた
+const SPEECH_THRESHOLD = 28;     // 音量しきい値（0〜255）。静かな環境なら下げる
 const SILENCE_DURATION_MS = 900;  // 何ms無音が続いたら「話し終わり」と判断するか
-const MIN_SPEECH_MS = 300;        // これ以下の発話は無視（咳・ノイズ除け）
+const MIN_SPEECH_MS = 500;        // これ以下の発話は無視（咳・ノイズ除け）
 const IDLE_NUDGE_MS = 10000;      // 会話中この時間沈黙が続いたらレムから話題を振る
+
+// STT(Whisper)は無音・環境音だけの入力に対しても、学習データ(大半がYouTube)由来の
+// もっともらしい定型文を返すことがある(ハルシネーション)。実際の来場者発話ではまず出ない
+// フレーズだけを狙い撃ちでブロックする（「はい」「うん」等の短い相槌は普通の発話でも
+// 起こりうるため、誤検知を減らすためあえて対象に含めない）
+const WHISPER_HALLUCINATION_PATTERNS = [
+  /ご視聴(ありがとうございました|ありがとうございます)/,
+  /チャンネル登録/,
+  /高評価.{0,6}(お願いします|よろしく)/,
+  /最後まで(ご視聴|見て)/,
+  /字幕視聴/,
+  /次(の)?動画で(お会い|会い)しましょう/,
+];
+
+function isWhisperHallucination(text: string): boolean {
+  return WHISPER_HALLUCINATION_PATTERNS.some((re) => re.test(text));
+}
 
 // 沈黙が続いたときレムから振る話題（LLMを呼ばず即再生。応答速度優先＆会話履歴を汚さない）
 const NUDGE_LINES = [
@@ -435,6 +455,10 @@ export function useConversation(
           localForm.append("audio", blob, "audio.webm");
           const res2 = await fetch(LOCAL_STT_URL, { method: "POST", body: localForm });
           text = (await res2.json()).text ?? "";
+        }
+        if (text && isWhisperHallucination(text)) {
+          console.warn("Whisper hallucination filtered:", text);
+          text = "";
         }
         if (text && activeRef.current) {
           setTranscript(text);

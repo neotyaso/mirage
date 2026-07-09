@@ -65,10 +65,10 @@ const CHAIR_YAW = 0;
 // 最後の詰めは着席モーションに合わせて滑らかにスライドさせる(SIT_SETTLE_LERP)
 const CHAIR_ARRIVE_DIST = 0.55;
 const SIT_SETTLE_LERP = 0.08;
-const SIT_Y_OFFSET = -0.16; // Mixamo側の椅子とroom.glbの椅子で座面高さが違うための補正(実機確認で調整)
+const SIT_Y_OFFSET = -0.35; // Mixamo側の椅子とroom.glbの椅子で座面高さが違うための補正(実機確認で調整)
 const SIT_DURATION_MIN = 6; // 秒。座ってから立ち上がるまでの長さ
 const SIT_DURATION_MAX = 14;
-const GO_SIT_CHANCE = 0.35; // 徘徊の一時停止のたびに椅子へ向かう確率
+const GO_SIT_CHANCE = 0.45; // 徘徊の一時停止のたびに椅子へ向かう確率
 
 // 徘徊・移動中に障害物(机・椅子)へ直進してめり込まないよう、近づいたら押し返す。
 // 椅子に座りに行く時は椅子自体は避けたい障害物から除外する(obstaclesで切り替え)

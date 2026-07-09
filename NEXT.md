@@ -294,6 +294,9 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
   - 代替: `llama-3.1-8b-instant`（最速・無料枠の日次上限も広い）/ `openai/gpt-oss-120b`（最大だが会話向きではなさそう）
 - STT精度が甘い場合は `GROQ_STT_MODEL` を `whisper-large-v3`（turboでない方、やや遅いが精度最大）に
 - **オフライン用フォールバック**（ネット不通時）: `stt_server.py`（faster-whisper `small`、要`.venv`）+ Ollama `gemma2`が残置してある。`useConversation.ts`をOllama版に戻せば復帰可能
+- **Whisperハルシネーション対策【✅完了・2026-07-09】**: 誰も喋ってないのに「ご視聴ありがとうございました」等が出る不具合を確認。原因は空調ノイズ等の環境音が`SPEECH_THRESHOLD`をたまに超えてWhisperに送られ、無音・ノイズ入力に対してYouTube学習データ由来の定型文をでっち上げていたもの（Whisperの既知の癖）。2段構えで対策:
+  1. `SPEECH_THRESHOLD` 18→28、`MIN_SPEECH_MS` 300→500に引き上げ、環境音での誤トリガーを抑制
+  2. `WHISPER_HALLUCINATION_PATTERNS`（「ご視聴ありがとうございました」「チャンネル登録」等の定番フレーズ）にマッチしたSTT結果は`chat()`を呼ばず握り潰す。ただし「はい」「うん」等の短い相槌は普通の発話でも起こりうるためブロック対象に含めていない（今後も同様の誤爆が続くようなら閾値の追加調整で対応）
 
 ### キャラクター
 - **名前**: レム
