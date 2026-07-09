@@ -76,15 +76,44 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
   near: 9000,
 };
 
-// 視線を外すと構うセリフ
-const LOOK_AWAY_LINES = [
-  "ねえねえ、こっち見てよ〜！",
-  "あれ、目そらした？さみしいって！",
-  "ちょっとちょっと、まだ話してる途中だよ〜",
+// 離脱時の別れの一言（実際に会話してた場合のみ発話。呼び込みだけで素通りされた時は言わない）
+const FAREWELL_LINES = [
+  "またね〜！話せて楽しかった！",
+  "ありがとう〜！気をつけて帰ってね！",
+  "えー、もう行っちゃうの！？また来てよね！",
+];
+
+// 視線を外すと構うセリフ。無視され続けるほどエスカレートする「食い下がるキャッチ」の演技段階
+// (段階1: 軽く呼びかけ → 段階2: ちょっと拗ねる → 段階3以降: 可愛く食い下がる/開き直る)
+const LOOK_AWAY_LINES_TIERED: string[][] = [
+  [
+    "ねえねえ、こっち見てよ〜！",
+    "あれ、目そらした？さみしいって！",
+  ],
+  [
+    "ちょっとちょっと、まだ話してる途中だよ〜",
+    "え、無視？そんな子だと思わなかったな〜",
+  ],
+  [
+    "もーっ！そんなに私のこと見たくない！？いいもん、でも見て！",
+    "無視されるとますます構いたくなるんですけど！ガハハ！",
+    "これはこれで面白いから許す！でもちゃんと見て〜！",
+  ],
 ];
 const LOOK_AWAY_YAW_THRESHOLD = 0.5; // ラジアン（約28度）。これ以上そっぽを向いたら「外した」判定
 const LOOK_AWAY_SUSTAIN_MS = 1500;   // これだけ継続してそっぽを向いたら反応（一瞬の視線移動では反応しない）
 const LOOK_AWAY_COOLDOWN_MS = 15000; // 連発しないためのクールダウン
+
+// プロクセミクス反応: 距離の"量"でなく"来かた"に反応する。
+// faceSize(顔の正規化幅)の変化速度を見て、急接近だけ驚くセリフを挟む
+const STARTLE_LINES = [
+  "わっ、近い近い！びっくりした〜！",
+  "うおっ！？急にどうしたの！？",
+  "ちょっ、そんな勢いで来ないでよ〜！",
+];
+const STARTLE_SPEED_THRESHOLD = 0.35; // faceSize/秒。この速さを超える接近を「急接近」とみなす
+const STARTLE_MIN_SIZE = 0.12;        // far未満(相手が遠すぎる)での誤反応を避けるための下限
+const STARTLE_COOLDOWN_MS = 10000;    // 連発防止
 
 // AivisSpeech (VOICEVOX互換 API)
 // スピーカーIDは GET http://localhost:10101/speakers で確認して変更
@@ -224,6 +253,17 @@ export default function App() {
   // 視線を外すと構う: そっぽを向いた継続時間とクールダウンの管理
   const lookAwaySinceRef = useRef(0);
   const lastLookAwayCallRef = useRef(0);
+  const lookAwayStreakRef = useRef(0); // 今回の来場でのエスカレーション段階（新規来場でリセット）
+  // プロクセミクス反応: 直前のfaceSize/時刻を保持し、変化速度から急接近を検知
+  const prevFaceSizeRef = useRef(0);
+  const prevFaceSizeAtRef = useRef(0);
+  const lastStartleRef = useRef(0);
+  // 実際に会話ログがあるか（離脱時の別れの一言を言うか判定用）。
+  // setInterval側のクロージャがconvState変化時にしか作り直されず、logの更新を都度拾えないためrefで同期する
+  const hasLogRef = useRef(false);
+  useEffect(() => {
+    hasLogRef.current = log.length > 0;
+  }, [log]);
   useEffect(() => {
     const id = setInterval(() => {
       const p = presentRef.current;
@@ -236,6 +276,28 @@ export default function App() {
       const fc = faceCenterRef.current;
       panRef.current = fc ? (fc.x - 0.5) * 2 : 0;
 
+      // プロクセミクス反応: ゆっくり来る→何もしない、急に来る→驚くセリフ。
+      // 距離の"量"でなく"来かた"（変化速度）だけを見る
+      {
+        const nowMs = performance.now();
+        const curSize = faceSizeRef.current;
+        const dt = (nowMs - prevFaceSizeAtRef.current) / 1000;
+        if (prevFaceSizeAtRef.current > 0 && dt > 0 && dt < 1) {
+          const speed = (curSize - prevFaceSizeRef.current) / dt;
+          if (
+            started && !paused && !speakingRef.current &&
+            curSize > STARTLE_MIN_SIZE &&
+            speed > STARTLE_SPEED_THRESHOLD &&
+            nowMs - lastStartleRef.current > STARTLE_COOLDOWN_MS
+          ) {
+            speak(STARTLE_LINES[Math.floor(Math.random() * STARTLE_LINES.length)]);
+            lastStartleRef.current = nowMs;
+          }
+        }
+        prevFaceSizeRef.current = curSize;
+        prevFaceSizeAtRef.current = nowMs;
+      }
+
       if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
         const now = performance.now();
         const cooldown = COOLDOWN[z];
@@ -244,6 +306,7 @@ export default function App() {
         } else {
           // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
           const isNewArrival = !wasPresent.current;
+          if (isNewArrival) lookAwayStreakRef.current = 0; // 新規来場者には食い下がり演出をリセット
           if (isNewArrival || now - lastCall.current > cooldown) {
             if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
               callOut(z);
@@ -268,9 +331,11 @@ export default function App() {
           now - lookAwaySinceRef.current > LOOK_AWAY_SUSTAIN_MS &&
           now - lastLookAwayCallRef.current > LOOK_AWAY_COOLDOWN_MS
         ) {
-          speak(LOOK_AWAY_LINES[Math.floor(Math.random() * LOOK_AWAY_LINES.length)]);
+          const tier = LOOK_AWAY_LINES_TIERED[Math.min(lookAwayStreakRef.current, LOOK_AWAY_LINES_TIERED.length - 1)];
+          speak(tier[Math.floor(Math.random() * tier.length)]);
           lastLookAwayCallRef.current = now;
           lookAwaySinceRef.current = 0;
+          lookAwayStreakRef.current += 1;
         }
       } else {
         lookAwaySinceRef.current = 0;
@@ -282,6 +347,11 @@ export default function App() {
           startConversation();
         }
         if (convState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
+          // 実際にやり取りがあった（ログが残っている）場合だけ別れの一言を挟む。
+          // 呼び込みだけで素通りされた時にまで「またね」と言うと不自然なので
+          if (hasLogRef.current) {
+            speak(FAREWELL_LINES[Math.floor(Math.random() * FAREWELL_LINES.length)]);
+          }
           stopConversation();
           resetHistory();
           silentResumeRef.current = true;
