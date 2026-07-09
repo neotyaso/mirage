@@ -115,6 +115,17 @@ const STARTLE_SPEED_THRESHOLD = 0.35; // faceSize/秒。この速さを超える
 const STARTLE_MIN_SIZE = 0.12;        // far未満(相手が遠すぎる)での誤反応を避けるための下限
 const STARTLE_COOLDOWN_MS = 10000;    // 連発防止
 
+// 目が合ってるかゲーム: 虹彩の水平位置(gazeRatio)+頭の向き(yaw)が両方カメラ目線に近い状態を
+// 一定時間キープできたら「照れる」リアクション。切れたら最初からやり直し
+const EYE_CONTACT_GAZE_RANGE: [number, number] = [0.35, 0.65]; // gazeRatioがこの範囲内なら「目が合ってる」
+const EYE_CONTACT_YAW_THRESHOLD = 0.3; // ラジアン。LOOK_AWAY_YAW_THRESHOLDより厳しめ(ゲームなので精度重視)
+const EYE_CONTACT_WIN_MS = 3000;       // これだけ目を合わせ続けたら勝ち
+const EYE_CONTACT_LINES = [
+  "ちょっ…そんな見つめないでよ…照れるじゃん！",
+  "わっ、ずっと目ぇ合ってる！これはこれで…ドキドキするな！",
+  "見つめ合い勝負、あなたの勝ち！参りました〜！",
+];
+
 // AivisSpeech (VOICEVOX互換 API)
 // スピーカーIDは GET http://localhost:10101/speakers で確認して変更
 const AIVIS_URL = "http://localhost:10101";
@@ -126,7 +137,7 @@ export default function App() {
   const panRef = useRef(0); // 空間オーディオ: -1(左)〜1(右)。来場者の画面上の左右位置に追従
   const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
+  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, gazeRatioRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
 
   const [started, setStarted] = useState(false);
@@ -258,6 +269,9 @@ export default function App() {
   const prevFaceSizeRef = useRef(0);
   const prevFaceSizeAtRef = useRef(0);
   const lastStartleRef = useRef(0);
+  // 目が合ってるかゲーム: 継続時間と、勝利後の再アームを管理（切れるまで連発しない）
+  const eyeContactSinceRef = useRef(0);
+  const eyeContactWonRef = useRef(false);
   // 実際に会話ログがあるか（離脱時の別れの一言を言うか判定用）。
   // setInterval側のクロージャがconvState変化時にしか作り直されず、logの更新を都度拾えないためrefで同期する
   const hasLogRef = useRef(false);
@@ -339,6 +353,31 @@ export default function App() {
         }
       } else {
         lookAwaySinceRef.current = 0;
+      }
+
+      // 目が合ってるかゲーム: near接近中、虹彩の水平位置+頭の向きが両方カメラ目線に近い状態を
+      // EYE_CONTACT_WIN_MSキープできたら勝ち。会話中に喋ってる最中には割り込まない
+      {
+        const gaze = gazeRatioRef.current;
+        const isEyeContact =
+          gaze >= EYE_CONTACT_GAZE_RANGE[0] && gaze <= EYE_CONTACT_GAZE_RANGE[1] &&
+          Math.abs(faceYawRef.current) < EYE_CONTACT_YAW_THRESHOLD;
+
+        if (started && !paused && z === "near" && isEyeContact) {
+          const now = performance.now();
+          if (eyeContactSinceRef.current === 0) eyeContactSinceRef.current = now;
+          if (
+            !eyeContactWonRef.current &&
+            !speakingRef.current && convState !== "thinking" &&
+            now - eyeContactSinceRef.current > EYE_CONTACT_WIN_MS
+          ) {
+            speak(EYE_CONTACT_LINES[Math.floor(Math.random() * EYE_CONTACT_LINES.length)]);
+            eyeContactWonRef.current = true; // 一度勝ったら、目を外して仕切り直すまで再発火しない
+          }
+        } else {
+          eyeContactSinceRef.current = 0;
+          eyeContactWonRef.current = false;
+        }
       }
 
       if (p) lastPresentAtRef.current = performance.now();
