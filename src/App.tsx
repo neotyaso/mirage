@@ -5,7 +5,6 @@ import { Avatar } from "./components/Avatar";
 import { Room } from "./components/Room";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
-import { useObjectDetection } from "./hooks/useObjectDetection";
 import { useConversation } from "./hooks/useConversation";
 import type { ConvState } from "./hooks/useConversation";
 import type { MutableRefObject } from "react";
@@ -116,40 +115,8 @@ const STARTLE_SPEED_THRESHOLD = 0.35; // faceSize/秒。この速さを超える
 const STARTLE_MIN_SIZE = 0.12;        // far未満(相手が遠すぎる)での誤反応を避けるための下限
 const STARTLE_COOLDOWN_MS = 10000;    // 連発防止
 
-// 目が合ってるかゲーム: 虹彩の水平位置(gazeRatio)+頭の向き(yaw)が両方カメラ目線に近い状態を
-// 一定時間キープできたら「照れる」リアクション。切れたら最初からやり直し
-const EYE_CONTACT_GAZE_RANGE: [number, number] = [0.35, 0.65]; // gazeRatioがこの範囲内なら「目が合ってる」
-const EYE_CONTACT_YAW_THRESHOLD = 0.3; // ラジアン。LOOK_AWAY_YAW_THRESHOLDより厳しめ(ゲームなので精度重視)
-const EYE_CONTACT_WIN_MS = 3000;       // これだけ目を合わせ続けたら勝ち
-const EYE_CONTACT_LINES = [
-  "ちょっ…そんな見つめないでよ…照れるじゃん！",
-  "わっ、ずっと目ぇ合ってる！これはこれで…ドキドキするな！",
-  "見つめ合い勝負、あなたの勝ち！参りました〜！",
-];
-
-// 持ち物当てマジック: YOLOの検知結果を「心を読んでる」風に言い当てる演出。
-// 誤検知で気まずくならないよう、展示会場で実際に持ってそうな品目だけに絞り、信頼度も高めに要求する
-const MAGIC_TRICK_CLASSES: Record<string, string> = {
-  "cell phone": "スマホ",
-  backpack: "リュック",
-  handbag: "カバン",
-  umbrella: "傘",
-  bottle: "飲み物のボトル",
-  cup: "カップ",
-  book: "本",
-  laptop: "パソコン",
-  suitcase: "スーツケース",
-  tie: "ネクタイ",
-};
-const MAGIC_TRICK_MIN_SCORE = 0.6; // 誤爆を避けるため通常の物体検知より高めの閾値
-const MAGIC_TRICK_CHANCE = 0.5;    // 条件を満たしても毎回はやらない（レアな演出にする）
-const MAGIC_TRICK_MAX_TRIES = 2;   // 1回の来場での最大試行回数
-const MAGIC_TRICK_COOLDOWN_MS = 8000;
-const MAGIC_TRICK_LINES = (item: string) => [
-  `ちょっと待って、あなたの心を読んでみるね…えいっ！…${item}、持ってるでしょ！当たった！？`,
-  `レムの目には全部お見通し！${item}、持ってきたよね？`,
-  `くんくん…これは${item}の匂いがする！持ってるでしょ、当たり！`,
-];
+// 見つめ合いゲーム・持ち物当てマジックは、常時バックグラウンドの自動発火から
+// コマンド起動制のモードに変更(Playground.tsxで実装)。App.tsx側の自動発火は撤去済み
 
 // AivisSpeech (VOICEVOX互換 API)
 // スピーカーIDは GET http://localhost:10101/speakers で確認して変更
@@ -162,16 +129,14 @@ export default function App() {
   const panRef = useRef(0); // 空間オーディオ: -1(左)〜1(右)。来場者の画面上の左右位置に追従
   const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, gazeRatioRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
+  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
 
   const [started, setStarted] = useState(false);
-  const { objectsRef, ready: yoloReady, error: yoloError } = useObjectDetection(videoRef, started);
   const [paused, setPaused] = useState(false);
   const [present, setPresent] = useState(false);
   const [faces, setFaces] = useState(0);
   const [zone, setZone] = useState<DistanceZone>("absent");
-  const [detectedLabels, setDetectedLabels] = useState(""); // デバッグHUD表示用（objectsRefは非reactiveなので定期的にstateへ反映）
   const [debugMode, setDebugMode] = useState(false); // 展示本番では隠す。"d"キーで表示切り替え
 
   // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え
@@ -296,12 +261,6 @@ export default function App() {
   const prevFaceSizeRef = useRef(0);
   const prevFaceSizeAtRef = useRef(0);
   const lastStartleRef = useRef(0);
-  // 目が合ってるかゲーム: 継続時間と、勝利後の再アームを管理（切れるまで連発しない）
-  const eyeContactSinceRef = useRef(0);
-  const eyeContactWonRef = useRef(false);
-  // 持ち物当てマジック: 今回の来場での試行回数とクールダウン（新規来場でリセット）
-  const magicTriesRef = useRef(0);
-  const lastMagicAttemptRef = useRef(0);
   // 実際に会話ログがあるか（離脱時の別れの一言を言うか判定用）。
   // setInterval側のクロージャがconvState変化時にしか作り直されず、logの更新を都度拾えないためrefで同期する
   const hasLogRef = useRef(false);
@@ -315,7 +274,6 @@ export default function App() {
       setPresent(p);
       setFaces(faceCountRef.current);
       setZone(z);
-      setDetectedLabels(objectsRef.current.map((o) => `${o.className}(${o.score.toFixed(2)})`).join(", "));
 
       // 空間オーディオ: 来場者の画面上の左右位置に合わせて声のパンを更新（OffAxisCameraと同じ符号規則）
       const fc = faceCenterRef.current;
@@ -351,10 +309,7 @@ export default function App() {
         } else {
           // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
           const isNewArrival = !wasPresent.current;
-          if (isNewArrival) {
-            lookAwayStreakRef.current = 0; // 新規来場者には食い下がり演出をリセット
-            magicTriesRef.current = 0; // 持ち物当てマジックの試行回数もリセット
-          }
+          if (isNewArrival) lookAwayStreakRef.current = 0; // 新規来場者には食い下がり演出をリセット
           if (isNewArrival || now - lastCall.current > cooldown) {
             if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
               callOut(z);
@@ -387,53 +342,6 @@ export default function App() {
         }
       } else {
         lookAwaySinceRef.current = 0;
-      }
-
-      // 目が合ってるかゲーム: near接近中、虹彩の水平位置+頭の向きが両方カメラ目線に近い状態を
-      // EYE_CONTACT_WIN_MSキープできたら勝ち。会話中に喋ってる最中には割り込まない
-      {
-        const gaze = gazeRatioRef.current;
-        const isEyeContact =
-          gaze >= EYE_CONTACT_GAZE_RANGE[0] && gaze <= EYE_CONTACT_GAZE_RANGE[1] &&
-          Math.abs(faceYawRef.current) < EYE_CONTACT_YAW_THRESHOLD;
-
-        if (started && !paused && z === "near" && isEyeContact) {
-          const now = performance.now();
-          if (eyeContactSinceRef.current === 0) eyeContactSinceRef.current = now;
-          if (
-            !eyeContactWonRef.current &&
-            !speakingRef.current && convState !== "thinking" &&
-            now - eyeContactSinceRef.current > EYE_CONTACT_WIN_MS
-          ) {
-            speak(EYE_CONTACT_LINES[Math.floor(Math.random() * EYE_CONTACT_LINES.length)]);
-            eyeContactWonRef.current = true; // 一度勝ったら、目を外して仕切り直すまで再発火しない
-          }
-        } else {
-          eyeContactSinceRef.current = 0;
-          eyeContactWonRef.current = false;
-        }
-      }
-
-      // 持ち物当てマジック: near接近中、対応品目が高信頼度で検知されていればランダムで言い当てる
-      {
-        const now = performance.now();
-        if (
-          started && !paused && z === "near" &&
-          !speakingRef.current && convState !== "thinking" &&
-          magicTriesRef.current < MAGIC_TRICK_MAX_TRIES &&
-          now - lastMagicAttemptRef.current > MAGIC_TRICK_COOLDOWN_MS
-        ) {
-          const hit = objectsRef.current.find(
-            (o) => o.className in MAGIC_TRICK_CLASSES && o.score >= MAGIC_TRICK_MIN_SCORE
-          );
-          if (hit && Math.random() < MAGIC_TRICK_CHANCE) {
-            const item = MAGIC_TRICK_CLASSES[hit.className];
-            const lines = MAGIC_TRICK_LINES(item);
-            speak(lines[Math.floor(Math.random() * lines.length)]);
-            magicTriesRef.current += 1;
-            lastMagicAttemptRef.current = now;
-          }
-        }
       }
 
       if (p) lastPresentAtRef.current = performance.now();
@@ -564,8 +472,6 @@ export default function App() {
         <div style={hudStyle}>
           cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
           {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {started ? "稼働中" : "停止中"}
-          <br />
-          yolo: {yoloError ? `ERR ${yoloError}` : yoloReady ? "ok" : "…"} | 検知: {detectedLabels || "(なし)"}
         </div>
       )}
     </div>

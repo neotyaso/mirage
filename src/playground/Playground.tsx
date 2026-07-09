@@ -1,4 +1,4 @@
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
@@ -8,6 +8,7 @@ import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceD
 
 // 実カメラ・実LLMなしでアニメーションだけ手動トリガーして見るための試験用ページ。
 // 本番App.tsxと同じrefインターフェースをAvatarに渡し、値はUIのボタン/スライダーから流し込む。
+// カメラを持たない設計のため、視線・物体検知が絡む機能は下記のように手動シミュレートするUIで代用する。
 
 // useFaceDetection.getDistanceZoneのしきい値に対応する代表値
 const ZONE_SIZE: Record<DistanceZone, number> = {
@@ -16,6 +17,34 @@ const ZONE_SIZE: Record<DistanceZone, number> = {
   mid: 0.18,
   near: 0.32,
 };
+
+// 見つめ合いゲーム: コマンド起動制（ボタンでモードに入り、条件成立の瞬間に発動）
+const EYE_CONTACT_WIN_MS = 3000; // これだけ見つめ続けたら勝ち
+const EYE_CONTACT_LINES = [
+  "ちょっ…そんな見つめないでよ…照れるじゃん！",
+  "わっ、ずっと目ぇ合ってる！これはこれで…ドキドキするな！",
+  "見つめ合い勝負、あなたの勝ち！参りました〜！",
+];
+
+// 持ち物当てマジック: コマンド起動制。YOLOの検知結果を「心を読んでる」風に言い当てる演出。
+// 誤検知で気まずくならないよう、展示会場で実際に持ってそうな品目だけに絞ってある
+const MAGIC_TRICK_CLASSES: Record<string, string> = {
+  "cell phone": "スマホ",
+  backpack: "リュック",
+  handbag: "カバン",
+  umbrella: "傘",
+  bottle: "飲み物のボトル",
+  cup: "カップ",
+  book: "本",
+  laptop: "パソコン",
+  suitcase: "スーツケース",
+  tie: "ネクタイ",
+};
+const MAGIC_TRICK_LINES = (item: string) => [
+  `ちょっと待って、あなたの心を読んでみるね…えいっ！…${item}、持ってるでしょ！当たった！？`,
+  `レムの目には全部お見通し！${item}、持ってきたよね？`,
+  `くんくん…これは${item}の匂いがする！持ってるでしょ、当たり！`,
+];
 
 function VolumeDriver({ speaking, volumeRef }: { speaking: boolean; volumeRef: React.MutableRefObject<number> }) {
   useFrame((state) => {
@@ -49,6 +78,64 @@ export function Playground() {
     const next = !sitting;
     setSitting(next);
     sittingRef.current = next;
+  }
+
+  // 見つめ合いゲーム: "armed"でモードに入り、"見つめる"チェックが3秒続いたら勝利して自動でモードを抜ける
+  const [eyeGameArmed, setEyeGameArmed] = useState(false);
+  const [gazingSim, setGazingSim] = useState(false); // 視線シミュレート（カメラが無いため手動チェックボックスで代用）
+  const [eyeGameElapsed, setEyeGameElapsed] = useState(0);
+  const [eyeGameResult, setEyeGameResult] = useState("");
+  const eyeGameSinceRef = useRef(0);
+
+  // 見つめ合いゲームの経過時間を100ms間隔でポーリング（3D描画ループとは無関係な単純なUI状態なのでsetIntervalで十分）
+  useEffect(() => {
+    if (!eyeGameArmed) return;
+    const id = setInterval(() => {
+      if (!gazingSim) {
+        eyeGameSinceRef.current = 0;
+        setEyeGameElapsed(0);
+        return;
+      }
+      if (eyeGameSinceRef.current === 0) eyeGameSinceRef.current = performance.now();
+      const elapsed = performance.now() - eyeGameSinceRef.current;
+      setEyeGameElapsed(elapsed);
+      if (elapsed >= EYE_CONTACT_WIN_MS) {
+        const line = EYE_CONTACT_LINES[Math.floor(Math.random() * EYE_CONTACT_LINES.length)];
+        setEyeGameResult(line);
+        setEyeGameArmed(false);
+        setGazingSim(false);
+        eyeGameSinceRef.current = 0;
+        setEyeGameElapsed(0);
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [eyeGameArmed, gazingSim]);
+
+  function toggleEyeGame() {
+    const next = !eyeGameArmed;
+    setEyeGameArmed(next);
+    setGazingSim(false);
+    eyeGameSinceRef.current = 0;
+    setEyeGameElapsed(0);
+    if (next) setEyeGameResult("");
+  }
+
+  // マジックモード: "armed"でモードに入り、品目ボタンを押すとそれを検知したことにして発動、自動でモードを抜ける
+  const [magicArmed, setMagicArmed] = useState(false);
+  const [magicResult, setMagicResult] = useState("");
+
+  function toggleMagic() {
+    const next = !magicArmed;
+    setMagicArmed(next);
+    if (next) setMagicResult("");
+  }
+
+  function triggerMagicItem(className: string) {
+    if (!magicArmed) return;
+    const item = MAGIC_TRICK_CLASSES[className];
+    const lines = MAGIC_TRICK_LINES(item);
+    setMagicResult(lines[Math.floor(Math.random() * lines.length)]);
+    setMagicArmed(false);
   }
 
   function selectZone(z: DistanceZone) {
@@ -156,6 +243,52 @@ export function Playground() {
             }}
           />
         </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>見つめ合いゲーム（コマンド起動）</span>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={toggleEyeGame} style={{ ...btnStyle, background: eyeGameArmed ? "#ef4444" : "#374151" }}>
+              {eyeGameArmed ? "■ モード終了" : "▶ ゲーム開始"}
+            </button>
+            {eyeGameArmed && (
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={gazingSim}
+                  onChange={(e) => setGazingSim(e.target.checked)}
+                />
+                見つめる（シミュレート）
+              </label>
+            )}
+          </div>
+          {eyeGameArmed && (
+            <span style={{ fontSize: 11, opacity: 0.7 }}>
+              {(eyeGameElapsed / 1000).toFixed(1)}s / {(EYE_CONTACT_WIN_MS / 1000).toFixed(0)}s
+            </span>
+          )}
+          {eyeGameResult && <span style={resultStyle}>{eyeGameResult}</span>}
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>マジックモード（コマンド起動・持ち物当て）</span>
+          <button onClick={toggleMagic} style={{ ...btnStyle, background: magicArmed ? "#ef4444" : "#374151" }}>
+            {magicArmed ? "■ モード終了" : "▶ マジックモードON"}
+          </button>
+          {magicArmed && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+              {Object.entries(MAGIC_TRICK_CLASSES).map(([cls, label]) => (
+                <button
+                  key={cls}
+                  onClick={() => triggerMagicItem(cls)}
+                  style={{ ...btnStyle, background: "#374151", fontSize: 11, padding: "4px 8px" }}
+                >
+                  {label}を見せる
+                </button>
+              ))}
+            </div>
+          )}
+          {magicResult && <span style={resultStyle}>{magicResult}</span>}
+        </div>
       </div>
     </div>
   );
@@ -195,4 +328,14 @@ const btnStyle: CSSProperties = {
   border: "none",
   borderRadius: 6,
   cursor: "pointer",
+};
+
+const resultStyle: CSSProperties = {
+  marginTop: 4,
+  padding: "6px 8px",
+  background: "rgba(139,92,246,0.25)",
+  border: "1px solid rgba(139,92,246,0.5)",
+  borderRadius: 6,
+  fontSize: 12,
+  lineHeight: 1.4,
 };
