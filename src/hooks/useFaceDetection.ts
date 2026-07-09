@@ -25,7 +25,7 @@ export function getDistanceZone(faceSize: number): DistanceZone {
   return "near";
 }
 
-export function useFaceDetection() {
+export function useFaceDetection(enabled: boolean = true) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const presentRef = useRef(false);
   const faceCountRef = useRef(0);
@@ -39,6 +39,10 @@ export function useFaceDetection() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      setReady(false);
+      return;
+    }
     let detector: FaceLandmarker | null = null;
     let stream: MediaStream | null = null;
     let rafId = 0;
@@ -229,7 +233,7 @@ export function useFaceDetection() {
       stream?.getTracks().forEach((t) => t.stop());
       detector?.close();
     };
-  }, []);
+  }, [enabled]);
 
   return {
     videoRef,

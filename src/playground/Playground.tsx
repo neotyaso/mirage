@@ -4,11 +4,13 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Avatar } from "../components/Avatar";
 import { Room } from "../components/Room";
+import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
+import { useConversation } from "../hooks/useConversation";
 
-// 実カメラ・実LLMなしでアニメーションだけ手動トリガーして見るための試験用ページ。
-// 本番App.tsxと同じrefインターフェースをAvatarに渡し、値はUIのボタン/スライダーから流し込む。
-// カメラを持たない設計のため、視線・物体検知が絡む機能は下記のように手動シミュレートするUIで代用する。
+// アニメーション・会話・視線ゲームを手動/実カメラ/実会話で試せる試験用ページ。
+// 本番App.tsxと同じrefインターフェースをAvatarに渡す。
+// カメラ・会話は「カメラON」「会話開始」ボタンで任意にON/OFFできる（OFF中は手動スライダー等で代用）。
 
 // useFaceDetection.getDistanceZoneのしきい値に対応する代表値
 const ZONE_SIZE: Record<DistanceZone, number> = {
@@ -19,6 +21,8 @@ const ZONE_SIZE: Record<DistanceZone, number> = {
 };
 
 // 見つめ合いゲーム: コマンド起動制（ボタンでモードに入り、条件成立の瞬間に発動）
+const EYE_CONTACT_GAZE_RANGE: [number, number] = [0.35, 0.65]; // gazeRatioがこの範囲内なら「目が合ってる」
+const EYE_CONTACT_YAW_THRESHOLD = 0.3; // ラジアン
 const EYE_CONTACT_WIN_MS = 3000; // これだけ見つめ続けたら勝ち
 const EYE_CONTACT_LINES = [
   "ちょっ…そんな見つめないでよ…照れるじゃん！",
@@ -36,17 +40,14 @@ function VolumeDriver({ speaking, volumeRef }: { speaking: boolean; volumeRef: R
 export function Playground() {
   const speakingRef = useRef(false);
   const volumeRef = useRef(0);
+  // Avatarへ渡す出力ref。カメラONの間は実カメラの値、OFFの間は手動操作の値をここへ同期する
   const faceCenterRef = useRef<FaceCenter | null>({ x: 0.5, y: 0.5 });
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
   const faceSizeRef = useRef(0);
+  const faceYawRef = useRef(0);
+  const gazeRatioRef = useRef(0.5);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
-  const actionRef = useRef<{ tag: "nod" | "tilt"; id: number } | null>(null);
-  const actionIdRef = useRef(0);
   const sittingRef = useRef(false);
-
-  function triggerAction(tag: "nod" | "tilt") {
-    actionRef.current = { tag, id: ++actionIdRef.current };
-  }
 
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [speaking, setSpeaking] = useState(false);
@@ -60,18 +61,76 @@ export function Playground() {
     sittingRef.current = next;
   }
 
-  // 見つめ合いゲーム: "armed"でモードに入り、"見つめる"チェックが3秒続いたら勝利して自動でモードを抜ける
+  // ---- カメラ(実顔検出) ----
+  const [cameraOn, setCameraOn] = useState(false);
+  const cam = useFaceDetection(cameraOn);
+  const [camFaces, setCamFaces] = useState(0);
+
+  // カメラONの間、実検出値をAvatar出力refへ同期する。OFFの間は手動操作がそのままAvatarに効く
+  useEffect(() => {
+    if (!cameraOn) return;
+    const id = setInterval(() => {
+      const z = getDistanceZone(cam.faceSizeRef.current);
+      faceCenterRef.current = cam.faceCenterRef.current;
+      allFaceCentersRef.current = cam.allFaceCentersRef.current;
+      faceSizeRef.current = cam.faceSizeRef.current;
+      faceYawRef.current = cam.faceYawRef.current;
+      gazeRatioRef.current = cam.gazeRatioRef.current;
+      expressionRef.current = cam.expressionRef.current;
+      setZone(z);
+      setCamFaces(cam.faceCountRef.current);
+    }, 100);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOn]);
+
+  function toggleCamera() {
+    setCameraOn((v) => !v);
+  }
+
+  // ---- 会話(実STT/LLM/TTS) ----
+  const [convOn, setConvOn] = useState(false);
+  const conv = useConversation(speakingRef, volumeRef);
+  const convLogEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    convLogEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conv.log]);
+
+  // 行動タグ: LLM([nod]/[tilt]タグ由来)と手動ボタンで同じrefを共有する。
+  // 手動分は負のidにして、hook内部の連番(正)と衝突しないようにする
+  function triggerAction(tag: "nod" | "tilt") {
+    conv.actionRef.current = { tag, id: -Date.now() };
+  }
+
+  function toggleConversation() {
+    if (convOn) {
+      conv.stopConversation();
+      setConvOn(false);
+    } else {
+      conv.startConversation();
+      setConvOn(true);
+    }
+  }
+
+  // 見つめ合いゲーム: "armed"でモードに入り、視線が3秒キープされたら勝利して自動でモードを抜ける。
+  // カメラONなら実際の視線判定(gazeRatio+yaw)、OFFなら手動チェックボックスで代用
   const [eyeGameArmed, setEyeGameArmed] = useState(false);
-  const [gazingSim, setGazingSim] = useState(false); // 視線シミュレート（カメラが無いため手動チェックボックスで代用）
+  const [gazingSim, setGazingSim] = useState(false);
   const [eyeGameElapsed, setEyeGameElapsed] = useState(0);
   const [eyeGameResult, setEyeGameResult] = useState("");
   const eyeGameSinceRef = useRef(0);
 
-  // 見つめ合いゲームの経過時間を100ms間隔でポーリング（3D描画ループとは無関係な単純なUI状態なのでsetIntervalで十分）
   useEffect(() => {
     if (!eyeGameArmed) return;
     const id = setInterval(() => {
-      if (!gazingSim) {
+      const gazing = cameraOn
+        ? gazeRatioRef.current >= EYE_CONTACT_GAZE_RANGE[0] &&
+          gazeRatioRef.current <= EYE_CONTACT_GAZE_RANGE[1] &&
+          Math.abs(faceYawRef.current) < EYE_CONTACT_YAW_THRESHOLD
+        : gazingSim;
+
+      if (!gazing) {
         eyeGameSinceRef.current = 0;
         setEyeGameElapsed(0);
         return;
@@ -89,7 +148,7 @@ export function Playground() {
       }
     }, 100);
     return () => clearInterval(id);
-  }, [eyeGameArmed, gazingSim]);
+  }, [eyeGameArmed, gazingSim, cameraOn]);
 
   function toggleEyeGame() {
     const next = !eyeGameArmed;
@@ -101,6 +160,7 @@ export function Playground() {
   }
 
   function selectZone(z: DistanceZone) {
+    if (cameraOn) return; // カメラONの間はゾーンも実検出から自動算出される
     setZone(z);
     faceSizeRef.current = ZONE_SIZE[z];
     faceCenterRef.current = z === "absent" ? null : { x: 0.5, y: 0.5 };
@@ -134,21 +194,76 @@ export function Playground() {
             allFaceCentersRef={allFaceCentersRef}
             expressionRef={expressionRef}
             faceSizeRef={faceSizeRef}
-            actionRef={actionRef}
+            actionRef={conv.actionRef}
             sittingRef={sittingRef}
           />
         </Suspense>
       </Canvas>
 
+      {/* 検出用カメラ（カメラON時のみ表示） */}
+      <video
+        ref={cam.videoRef}
+        playsInline
+        muted
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          width: 160,
+          height: 120,
+          objectFit: "cover",
+          transform: "scaleX(-1)",
+          border: "2px solid #333",
+          borderRadius: 6,
+          zIndex: 10,
+          visibility: cameraOn ? "visible" : "hidden",
+        }}
+      />
+
       <div style={panelStyle}>
         <div style={rowStyle}>
-          <span style={labelStyle}>距離ゾーン（歩行トリガー）</span>
+          <span style={labelStyle}>カメラ（実顔検出）</span>
+          <button onClick={toggleCamera} style={{ ...btnStyle, background: cameraOn ? "#ef4444" : "#374151" }}>
+            {cameraOn ? "■ カメラOFF" : "▶ カメラON"}
+          </button>
+          {cameraOn && (
+            <span style={{ fontSize: 11, opacity: 0.7 }}>
+              {cam.error ? `ERR ${cam.error}` : cam.ready ? "ok" : "…"} | 顔: {camFaces} | zone: {zone}
+            </span>
+          )}
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>会話（実STT/LLM/TTS）</span>
+          <button onClick={toggleConversation} style={{ ...btnStyle, background: convOn ? "#ef4444" : "#374151" }}>
+            {convOn
+              ? conv.state === "listening" ? "👂 聴いてる…"
+                : conv.state === "thinking" ? "💭 考え中…"
+                : conv.state === "speaking" ? "🔊 喋ってる"
+                : "■ 会話終了"
+              : "🎤 会話開始"}
+          </button>
+          {convOn && (
+            <div style={convLogStyle}>
+              {conv.log.map((entry) => (
+                <div key={entry.id} style={{ opacity: entry.role === "user" ? 0.8 : 1 }}>
+                  <b>{entry.role === "user" ? "あなた" : "レム"}:</b> {entry.text}
+                </div>
+              ))}
+              <div ref={convLogEndRef} />
+            </div>
+          )}
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>距離ゾーン（歩行トリガー）{cameraOn && "※カメラON中は自動"}</span>
           <div style={{ display: "flex", gap: 6 }}>
             {(["absent", "far", "mid", "near"] as DistanceZone[]).map((z) => (
               <button
                 key={z}
                 onClick={() => selectZone(z)}
-                style={{ ...btnStyle, background: zone === z ? "#8b5cf6" : "#374151" }}
+                disabled={cameraOn}
+                style={{ ...btnStyle, background: zone === z ? "#8b5cf6" : "#374151", opacity: cameraOn ? 0.5 : 1 }}
               >
                 {{ absent: "不在", far: "遠い", mid: "中距離", near: "近い" }[z]}
               </button>
@@ -183,9 +298,9 @@ export function Playground() {
         </div>
 
         <div style={rowStyle}>
-          <span style={labelStyle}>笑顔 {smile.toFixed(2)}</span>
+          <span style={labelStyle}>笑顔 {smile.toFixed(2)} {cameraOn && "※カメラON中は自動"}</span>
           <input
-            type="range" min={0} max={1} step={0.01} value={smile}
+            type="range" min={0} max={1} step={0.01} value={smile} disabled={cameraOn}
             onChange={(e) => {
               const v = Number(e.target.value);
               setSmile(v);
@@ -195,9 +310,9 @@ export function Playground() {
         </div>
 
         <div style={rowStyle}>
-          <span style={labelStyle}>驚き {surprised.toFixed(2)}</span>
+          <span style={labelStyle}>驚き {surprised.toFixed(2)} {cameraOn && "※カメラON中は自動"}</span>
           <input
-            type="range" min={0} max={1} step={0.01} value={surprised}
+            type="range" min={0} max={1} step={0.01} value={surprised} disabled={cameraOn}
             onChange={(e) => {
               const v = Number(e.target.value);
               setSurprised(v);
@@ -212,7 +327,7 @@ export function Playground() {
             <button onClick={toggleEyeGame} style={{ ...btnStyle, background: eyeGameArmed ? "#ef4444" : "#374151" }}>
               {eyeGameArmed ? "■ モード終了" : "▶ ゲーム開始"}
             </button>
-            {eyeGameArmed && (
+            {eyeGameArmed && !cameraOn && (
               <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
                 <input
                   type="checkbox"
@@ -221,6 +336,9 @@ export function Playground() {
                 />
                 見つめる（シミュレート）
               </label>
+            )}
+            {eyeGameArmed && cameraOn && (
+              <span style={{ fontSize: 11, opacity: 0.7 }}>実カメラの視線で判定中</span>
             )}
           </div>
           {eyeGameArmed && (
@@ -248,7 +366,9 @@ const panelStyle: CSSProperties = {
   color: "#fff",
   fontFamily: "sans-serif",
   fontSize: 13,
-  minWidth: 240,
+  minWidth: 260,
+  maxHeight: "calc(100vh - 24px)",
+  overflowY: "auto",
 };
 
 const rowStyle: CSSProperties = {
@@ -279,4 +399,18 @@ const resultStyle: CSSProperties = {
   borderRadius: 6,
   fontSize: 12,
   lineHeight: 1.4,
+};
+
+const convLogStyle: CSSProperties = {
+  marginTop: 4,
+  maxHeight: 140,
+  overflowY: "auto",
+  background: "rgba(0,0,0,0.3)",
+  borderRadius: 6,
+  padding: "6px 8px",
+  fontSize: 11,
+  lineHeight: 1.5,
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
 };
