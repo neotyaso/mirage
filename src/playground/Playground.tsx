@@ -8,7 +8,7 @@ import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
 import { useConversation } from "../hooks/useConversation";
 
-// アニメーション・会話・視線ゲームを手動/実カメラ/実会話で試せる試験用ページ。
+// アニメーション・会話を手動/実カメラ/実会話で試せる試験用ページ。
 // 本番App.tsxと同じrefインターフェースをAvatarに渡す。
 // カメラ・会話は「カメラON」「会話開始」ボタンで任意にON/OFFできる（OFF中は手動スライダー等で代用）。
 
@@ -19,16 +19,6 @@ const ZONE_SIZE: Record<DistanceZone, number> = {
   mid: 0.18,
   near: 0.32,
 };
-
-// 見つめ合いゲーム: コマンド起動制（ボタンでモードに入り、条件成立の瞬間に発動）
-const EYE_CONTACT_GAZE_RANGE: [number, number] = [0.35, 0.65]; // gazeRatioがこの範囲内なら「目が合ってる」
-const EYE_CONTACT_YAW_THRESHOLD = 0.3; // ラジアン
-const EYE_CONTACT_WIN_MS = 3000; // これだけ見つめ続けたら勝ち
-const EYE_CONTACT_LINES = [
-  "ちょっ…そんな見つめないでよ…照れるじゃん！",
-  "わっ、ずっと目ぇ合ってる！これはこれで…ドキドキするな！",
-  "見つめ合い勝負、あなたの勝ち！参りました〜！",
-];
 
 function VolumeDriver({ speaking, volumeRef }: { speaking: boolean; volumeRef: React.MutableRefObject<number> }) {
   useFrame((state) => {
@@ -45,7 +35,6 @@ export function Playground() {
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
   const faceSizeRef = useRef(0);
   const faceYawRef = useRef(0);
-  const gazeRatioRef = useRef(0.5);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const sittingRef = useRef(false);
 
@@ -75,7 +64,6 @@ export function Playground() {
       allFaceCentersRef.current = cam.allFaceCentersRef.current;
       faceSizeRef.current = cam.faceSizeRef.current;
       faceYawRef.current = cam.faceYawRef.current;
-      gazeRatioRef.current = cam.gazeRatioRef.current;
       expressionRef.current = cam.expressionRef.current;
       setZone(z);
       setCamFaces(cam.faceCountRef.current);
@@ -111,52 +99,6 @@ export function Playground() {
       conv.startConversation();
       setConvOn(true);
     }
-  }
-
-  // 見つめ合いゲーム: "armed"でモードに入り、視線が3秒キープされたら勝利して自動でモードを抜ける。
-  // カメラONなら実際の視線判定(gazeRatio+yaw)、OFFなら手動チェックボックスで代用
-  const [eyeGameArmed, setEyeGameArmed] = useState(false);
-  const [gazingSim, setGazingSim] = useState(false);
-  const [eyeGameElapsed, setEyeGameElapsed] = useState(0);
-  const [eyeGameResult, setEyeGameResult] = useState("");
-  const eyeGameSinceRef = useRef(0);
-
-  useEffect(() => {
-    if (!eyeGameArmed) return;
-    const id = setInterval(() => {
-      const gazing = cameraOn
-        ? gazeRatioRef.current >= EYE_CONTACT_GAZE_RANGE[0] &&
-          gazeRatioRef.current <= EYE_CONTACT_GAZE_RANGE[1] &&
-          Math.abs(faceYawRef.current) < EYE_CONTACT_YAW_THRESHOLD
-        : gazingSim;
-
-      if (!gazing) {
-        eyeGameSinceRef.current = 0;
-        setEyeGameElapsed(0);
-        return;
-      }
-      if (eyeGameSinceRef.current === 0) eyeGameSinceRef.current = performance.now();
-      const elapsed = performance.now() - eyeGameSinceRef.current;
-      setEyeGameElapsed(elapsed);
-      if (elapsed >= EYE_CONTACT_WIN_MS) {
-        const line = EYE_CONTACT_LINES[Math.floor(Math.random() * EYE_CONTACT_LINES.length)];
-        setEyeGameResult(line);
-        setEyeGameArmed(false);
-        setGazingSim(false);
-        eyeGameSinceRef.current = 0;
-        setEyeGameElapsed(0);
-      }
-    }, 100);
-    return () => clearInterval(id);
-  }, [eyeGameArmed, gazingSim, cameraOn]);
-
-  function toggleEyeGame() {
-    const next = !eyeGameArmed;
-    setEyeGameArmed(next);
-    setGazingSim(false);
-    eyeGameSinceRef.current = 0;
-    setEyeGameElapsed(0);
-    if (next) setEyeGameResult("");
   }
 
   function selectZone(z: DistanceZone) {
@@ -320,34 +262,6 @@ export function Playground() {
             }}
           />
         </div>
-
-        <div style={rowStyle}>
-          <span style={labelStyle}>見つめ合いゲーム（コマンド起動）</span>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <button onClick={toggleEyeGame} style={{ ...btnStyle, background: eyeGameArmed ? "#ef4444" : "#374151" }}>
-              {eyeGameArmed ? "■ モード終了" : "▶ ゲーム開始"}
-            </button>
-            {eyeGameArmed && !cameraOn && (
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={gazingSim}
-                  onChange={(e) => setGazingSim(e.target.checked)}
-                />
-                見つめる（シミュレート）
-              </label>
-            )}
-            {eyeGameArmed && cameraOn && (
-              <span style={{ fontSize: 11, opacity: 0.7 }}>実カメラの視線で判定中</span>
-            )}
-          </div>
-          {eyeGameArmed && (
-            <span style={{ fontSize: 11, opacity: 0.7 }}>
-              {(eyeGameElapsed / 1000).toFixed(1)}s / {(EYE_CONTACT_WIN_MS / 1000).toFixed(0)}s
-            </span>
-          )}
-          {eyeGameResult && <span style={resultStyle}>{eyeGameResult}</span>}
-        </div>
       </div>
     </div>
   );
@@ -389,16 +303,6 @@ const btnStyle: CSSProperties = {
   border: "none",
   borderRadius: 6,
   cursor: "pointer",
-};
-
-const resultStyle: CSSProperties = {
-  marginTop: 4,
-  padding: "6px 8px",
-  background: "rgba(139,92,246,0.25)",
-  border: "1px solid rgba(139,92,246,0.5)",
-  borderRadius: 6,
-  fontSize: 12,
-  lineHeight: 1.4,
 };
 
 const convLogStyle: CSSProperties = {

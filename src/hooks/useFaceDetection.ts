@@ -32,7 +32,6 @@ export function useFaceDetection(enabled: boolean = true) {
   const faceCenterRef = useRef<FaceCenter | null>(null);
   const faceSizeRef = useRef(0);
   const faceYawRef = useRef(0); // 主対象の頭の左右向き（ラジアン。0=正面、絶対値が大きいほどそっぽを向いている）
-  const gazeRatioRef = useRef(0.5); // 主対象の視線(虹彩位置)の水平比率。0.5=中央(カメラ目線に近い)、0/1に近いほど左右どちらかを見ている
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const [ready, setReady] = useState(false);
@@ -60,28 +59,6 @@ export function useFaceDetection(enabled: boolean = true) {
     // カメラ追従・距離判定・視線の基準が別人に急に切り替わってしまう。
     // 直前フレームで「話しかけてる相手」だった顔に最も近い顔を、今回も同一人物として追い続ける。
     let primaryCenter: FaceCenter | null = null;
-
-    // 虹彩(iris)の水平位置を目の両端で正規化し、視線が中央(カメラ目線)寄りかを見る。
-    // MediaPipe FaceLandmarkerは478点(468基本点+虹彩10点)を常に返すため追加ライブラリ不要。
-    // インデックス: 468/473=虹彩中心、{33,133}/{362,263}=左右それぞれの目の両端
-    function computeGazeRatio(lm: { x: number; y: number }[]): number {
-      const ratios: number[] = [];
-      const pairs: [number, number, number][] = [
-        [468, 33, 133],
-        [473, 362, 263],
-      ];
-      for (const [iris, cornerA, cornerB] of pairs) {
-        const a = lm[cornerA], b = lm[cornerB], i = lm[iris];
-        if (!a || !b || !i) continue;
-        const span = b.x - a.x;
-        if (Math.abs(span) < 1e-6) continue;
-        ratios.push(clamp01((i.x - a.x) / span));
-      }
-      return ratios.length > 0 ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0.5;
-    }
-    function clamp01(x: number): number {
-      return x < 0 ? 0 : x > 1 ? 1 : x;
-    }
 
     function blendshapeScore(
       categories: { categoryName: string; score: number }[],
@@ -165,10 +142,6 @@ export function useFaceDetection(enabled: boolean = true) {
             faceYawRef.current = 0;
           }
 
-          // 視線(虹彩)の水平比率を主対象の生ランドマークから算出
-          const primaryLm = landmarks[primaryIdx];
-          gazeRatioRef.current = primaryLm ? computeGazeRatio(primaryLm) : 0.5;
-
           // blendshapesから表情スコアを抽出（主対象と同じ人物のインデックス）
           if (blendshapes.length > primaryIdx) {
             const cats = blendshapes[primaryIdx].categories;
@@ -182,7 +155,6 @@ export function useFaceDetection(enabled: boolean = true) {
           faceCenterRef.current = null;
           faceSizeRef.current = 0;
           faceYawRef.current = 0;
-          gazeRatioRef.current = 0.5;
           allFaceCentersRef.current = [];
           expressionRef.current = { smile: 0, surprised: 0 };
         }
@@ -242,7 +214,6 @@ export function useFaceDetection(enabled: boolean = true) {
     faceCenterRef,
     faceSizeRef,
     faceYawRef,
-    gazeRatioRef,
     allFaceCentersRef,
     expressionRef,
     ready,

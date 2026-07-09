@@ -279,11 +279,9 @@ aituber-kit は「配信画面の中の受動的な2Dキャラ」。こっちは
    - `lookAwayStreakRef`で今回の来場中の段階を保持、新規来場者（`isNewArrival`）でリセット
    - `SYSTEM_PROMPT`にも「塩対応されるほど構いたくなる（卑屈にはならない）」を一言追記し、LLM応答自体もこの気質を反映するように
 
-7. **見つめ合いゲーム**【✅完了・方針転換2026-07-09、Playground実カメラ対応2026-07-09】
-   - MediaPipe FaceLandmarkerは追加ライブラリなしで478点（基本468点+虹彩10点）を常時返すことが判明（Tasks APIはlegacyのFaceMeshと違い`refineLandmarks`指定不要）。虹彩中心(468/473)と目の両端(33/133・362/263)から視線の水平比率を`useFaceDetection.ts`の`gazeRatioRef`として算出（このフック自体は現存）
-   - 当初`App.tsx`にnear接近中の自動バックグラウンド発火として実装したが、本人の意向で**コマンド起動制のモードに変更**。App.tsx側の自動発火コードは撤去し、`Playground.tsx`に「ゲーム開始」ボタン→モード突入→視線が3秒キープで勝利、の一連をコマンド操作で再現できる形にした
-   - **Playgroundに実カメラ・実会話を追加**（詳細は下記）したことで、見つめ合いゲームもカメラON時は実際の視線判定(`gazeRatio`+`yaw`)で、カメラOFF時は「見つめる」チェックボックスのシミュレートで、の両対応になった
-   - 本番`App.tsx`でどう起動させるか（音声コマンド／ボタン等）は未定・別途検討
+7. **見つめ合いゲーム**【❌撤去・2026-07-09】
+   - App.tsx自動発火→Playgroundコマンド起動制→Playground実カメラ対応、と方向転換を重ねた末に、本人の判断で機能ごと撤去。`gazeRatioRef`・虹彩ランドマーク計算(`computeGazeRatio`)も他に使い道が無いため`useFaceDetection.ts`から削除
+   - 技術メモ（再挑戦する時のため）: MediaPipe FaceLandmarkerは追加ライブラリなしで478点（基本468点+虹彩10点）を常時返す（Tasks APIはlegacyのFaceMeshと違い`refineLandmarks`指定不要）。虹彩中心(468/473)と目の両端(33/133・362/263)から視線の水平比率を算出できる
 
 ### Playgroundに実カメラ・実会話を追加【✅完了・2026-07-09】
 `Playground.tsx`は当初「カメラ・LLM無しで手動トリガーのみ」という設計だったが、見つめ合いゲーム等の

@@ -115,8 +115,6 @@ const STARTLE_SPEED_THRESHOLD = 0.35; // faceSize/秒。この速さを超える
 const STARTLE_MIN_SIZE = 0.12;        // far未満(相手が遠すぎる)での誤反応を避けるための下限
 const STARTLE_COOLDOWN_MS = 10000;    // 連発防止
 
-// 見つめ合いゲーム・持ち物当てマジックは、常時バックグラウンドの自動発火から
-// コマンド起動制のモードに変更(Playground.tsxで実装)。App.tsx側の自動発火は撤去済み
 
 // AivisSpeech (VOICEVOX互換 API)
 // スピーカーIDは GET http://localhost:10101/speakers で確認して変更
