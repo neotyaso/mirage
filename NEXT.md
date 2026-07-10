@@ -217,10 +217,25 @@ Playgroundからライブ上書き可能）。Playwrightでの見た目確認が
   ページ読み込み直後の初回徘徊**をPlaywrightで連写して再現でき、座り→歩行に限らず
   **「isWalking が false→true に切り替わる瞬間全般」で起きる不具合**と判明。lerpによる緩和だけでは
   低fps環境や初回フレームで収束が間に合わないケースがあった
-- 対策(第2弾・最終): `walkWeight < 0.25`の間は基本姿勢へ`.rotation.set()`で直接スナップし、
+- 対策(第2弾): `walkWeight < 0.25`の間は基本姿勢へ`.rotation.set()`で直接スナップし、
   閾値を超えたらlerpベースの`standPull`に切り替える二段構えに変更。Playwrightで(a)ページ読み込み直後の
   初回徘徊、(b)座る→立つ、両方を連写して改善を確認。歩行中の自然な腕振り自体は妨げていない
   （`walkWeight`が十分上がった後はスナップが発動しないため）
+- 本人から「やっぱり座って立った直後に同じバグがある」と再報告。第2弾修正だけでは不十分と判明し、
+  さらに2つの原因を追加で特定・修正:
+  - `autoSitting`が`chairState`より1フレーム遅れてfalseになるタイミングバグ。`sitDuration`超過時、
+    `chairState.current = "roam"`は即座に切り替わるが`autoSitting.current`をその場でfalseにしていなかったため、
+    次フレーム冒頭の`isSitting`計算（`autoSitting`参照）が古い値を読み、`chairState`はもう`"roam"`なのに
+    `isSitting`だけ1フレーム遅れてtrueのまま残っていた（腕が座り姿勢のまま固定される一因）。
+    `sitDuration`超過の分岐内で`autoSitting.current = false`を即時実行するよう修正
+  - `isSitting`がtrue→falseに切り替わった"その瞬間"を`wasSittingForArms`refで検知し、腕・肘・肩を
+    基本姿勢へ`.rotation.set()`で強制ハードリセットする保険を追加（`walkWeight`のタイミング依存の
+    補正だけでは環境によって収束が間に合わないケースへの対策）
+  - Playwrightで座る→立つを50ms間隔で連写（計16フレーム、立ち上がりからwalkWeightが
+    ほぼ1になるまでの全過程をカバー）して再検証し、腕の伸び・破綻が一切発生しないことを確認。
+    以前のデバッグログ（`console.log`によるフレームごとの`rArm.rotation`記録）は分岐処理が走る**前**の
+    中間値を記録していたため、実際は正しく補正された最終値と食い違って見えていた点も判明
+    （ログの設置位置が誤っていただけで、`standPull`修正自体は機能していた）
 
 ### 行動タグ（LLMが動きを選ぶ）システム【最小版✅完了・2026-07-08】
 Blenderを使わずコードだけで完結する範囲でまず実装。「歩く/手を振る/頷く/腕組み/何もしない」の構想のうち、

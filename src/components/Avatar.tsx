@@ -187,6 +187,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const sitDuration = useRef(SIT_DURATION_MIN);
   const autoSitting = useRef(false); // 行動AIが決めた着席状態(手動プレビューのsittingRefとは別)
   const wasManualSitting = useRef(false); // 手動座りプレビューをOFFにした瞬間を検知し、AI徘徊へ復帰させるため
+  const wasSittingForArms = useRef(false); // isSittingがtrue→falseになった瞬間を検知し、腕を強制リセットするため
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
@@ -386,6 +387,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
           sitClock.current += delta;
           if (sitClock.current > sitDuration.current) {
             chairState.current = "roam";
+            // ここで即座にfalseにしないと、次フレーム冒頭のisSitting計算(autoSitting参照)が
+            // 古い値を読んでしまい、chairStateはもう"roam"なのにisSittingだけ1フレーム
+            // 遅れてtrueのまま残ってしまう(腕が座り姿勢のまま固定される一因になっていた)
+            autoSitting.current = false;
             wanderTarget.current = pickWanderTarget();
             wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
           }
@@ -504,6 +509,19 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const speaking = speakingRef?.current ?? false;
     const { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder } = gestureBones.current;
     if (lArm && rArm && lElbow && rElbow) {
+      // isSittingがtrue→falseになった"その瞬間"だけ、腕・肘・肩を基本姿勢へ強制的にハードリセットする。
+      // walkWeightのタイミングに依存する補正(このすぐ下のisWalking分岐)だけでは、環境によって
+      // 収束が間に合わず座り姿勢の値が一瞬残ってしまうケースがあったための保険
+      if (wasSittingForArms.current && !isSitting) {
+        lArm.rotation.set(0.1, 0, -1.2);
+        lElbow.rotation.set(0, 0, -0.15);
+        rArm.rotation.set(0.1, 0, 1.2);
+        rElbow.rotation.set(0, 0, 0.15);
+        if (lShoulder) lShoulder.rotation.set(0, 0, 0);
+        if (rShoulder) rShoulder.rotation.set(0, 0, 0);
+      }
+      wasSittingForArms.current = isSitting;
+
       if (speaking) {
         if (!wasSpeaking.current) {
           // 喋り始めた瞬間にリズムを再抽選 → 毎回違う揺れ方になる
