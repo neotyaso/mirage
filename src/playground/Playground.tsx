@@ -2,7 +2,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
-import { Avatar, DEFAULT_SIT_POSE } from "../components/Avatar";
+import { Avatar, DEFAULT_SIT_POSE, DEFAULT_STRETCH_POSE } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
@@ -38,6 +38,7 @@ export function Playground() {
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const sittingRef = useRef(false);
   const sitPoseRef = useRef({ ...DEFAULT_SIT_POSE });
+  const stretchPoseRef = useRef({ ...DEFAULT_STRETCH_POSE });
 
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [speaking, setSpeaking] = useState(false);
@@ -45,6 +46,7 @@ export function Playground() {
   const [surprised, setSurprised] = useState(0);
   const [sitting, setSitting] = useState(false);
   const [sitPose, setSitPose] = useState(sitPoseRef.current);
+  const [stretchPose, setStretchPose] = useState(stretchPoseRef.current);
 
   function toggleSitting() {
     const next = !sitting;
@@ -68,6 +70,26 @@ export function Playground() {
       `const SIT_ARM = { z: ${p.armZ}, x: ${p.armX} };\n` +
       `const SIT_ELBOW = { z: ${p.elbowZ} };\n` +
       `// shoulder: x=${p.shoulderX}, z=${p.shoulderZ}`;
+    navigator.clipboard.writeText(text);
+  }
+
+  function updateStretchPose(key: keyof typeof stretchPoseRef.current, value: number) {
+    stretchPoseRef.current = { ...stretchPoseRef.current, [key]: value };
+    setStretchPose(stretchPoseRef.current);
+  }
+
+  function resetStretchPose() {
+    stretchPoseRef.current = { ...DEFAULT_STRETCH_POSE };
+    setStretchPose(stretchPoseRef.current);
+  }
+
+  function copyStretchPose() {
+    const p = stretchPoseRef.current;
+    const text =
+      `const STRETCH_ARM = { z: ${p.armZ}, x: ${p.armX} };\n` +
+      `const STRETCH_ELBOW = { z: ${p.elbowZ} };\n` +
+      `const STRETCH_SHOULDER = { x: ${p.shoulderX}, z: ${p.shoulderZ} };\n` +
+      `const STRETCH_CHEST_X = ${p.chestX};`;
     navigator.clipboard.writeText(text);
   }
 
@@ -108,7 +130,8 @@ export function Playground() {
 
   // 行動タグ: LLM([nod]/[tilt]タグ由来)と手動ボタンで同じrefを共有する。
   // 手動分は負のidにして、hook内部の連番(正)と衝突しないようにする
-  function triggerAction(tag: "nod" | "tilt") {
+  // ("stretch"はLLMには使わせておらず手動トリガー専用)
+  function triggerAction(tag: "nod" | "tilt" | "stretch") {
     conv.actionRef.current = { tag, id: -Date.now() };
   }
 
@@ -160,6 +183,7 @@ export function Playground() {
             actionRef={conv.actionRef}
             sittingRef={sittingRef}
             sitPoseRef={sitPoseRef}
+            stretchPoseRef={stretchPoseRef}
           />
         </Suspense>
       </Canvas>
@@ -285,6 +309,36 @@ export function Playground() {
             <button onClick={() => triggerAction("tilt")} style={{ ...btnStyle, background: "#374151" }}>
               首をかしげる
             </button>
+            <button onClick={() => triggerAction("stretch")} style={{ ...btnStyle, background: "#374151" }}>
+              伸びる
+            </button>
+          </div>
+        </div>
+
+        <div style={{ ...rowStyle, background: "rgba(139,92,246,0.12)", padding: "8px 10px", borderRadius: 8 }}>
+          <span style={labelStyle}>伸びポーズの調整（腕・肘・肩・胸）</span>
+          {(
+            [
+              { key: "armX", label: "腕・前後", min: -1.5, max: 1.5 },
+              { key: "armZ", label: "腕・横", min: -2.4, max: 2.4 },
+              { key: "elbowZ", label: "肘", min: -0.3, max: 1.5 },
+              { key: "shoulderX", label: "肩・前後", min: -0.5, max: 0.5 },
+              { key: "shoulderZ", label: "肩・横", min: -0.5, max: 0.5 },
+              { key: "chestX", label: "胸・反り", min: -0.4, max: 0.4 },
+            ] as const
+          ).map(({ key, label, min, max }) => (
+            <div key={key} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 11, opacity: 0.8 }}>{label} {stretchPose[key].toFixed(2)}</span>
+              <input
+                type="range" min={min} max={max} step={0.01} value={stretchPose[key]}
+                onChange={(e) => updateStretchPose(key, Number(e.target.value))}
+              />
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <button onClick={() => triggerAction("stretch")} style={{ ...btnStyle, background: "#374151" }}>プレビュー再生</button>
+            <button onClick={resetStretchPose} style={{ ...btnStyle, background: "#374151" }}>リセット</button>
+            <button onClick={copyStretchPose} style={{ ...btnStyle, background: "#374151" }}>値をコピー</button>
           </div>
         </div>
 

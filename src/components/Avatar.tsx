@@ -28,11 +28,13 @@ export interface AvatarProps {
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
-  actionRef?: MutableRefObject<{ tag: "nod" | "tilt"; id: number } | null>;
+  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch"; id: number } | null>;
   // 座りモーション(手動プレビュー用)。trueの間sit.vrmaへ重みをブレンドし、椅子の位置に固定する
   sittingRef?: MutableRefObject<boolean>;
   // 座り姿勢(腕・肘・肩)のライブ調整用。未指定ならDEFAULT_SIT_POSEを使う
   sitPoseRef?: MutableRefObject<{ armX: number; armZ: number; elbowZ: number; shoulderX: number; shoulderZ: number }>;
+  // 伸びポーズ(腕・肘・肩・胸)のライブ調整用。未指定ならDEFAULT_STRETCH_POSEを使う
+  stretchPoseRef?: MutableRefObject<{ armX: number; armZ: number; elbowZ: number; shoulderX: number; shoulderZ: number; chestX: number }>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -120,6 +122,32 @@ const ACTION_DURATION_S = 0.7;
 const NOD_ANGLE = 0.35;  // ラジアン。頭を下げる角度
 const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 
+// 伸び(手続き型・単発モーション)。腕を上げて少し胸を反らし、少し保持してから戻す。
+// nod/tiltより大きな動きなので尺を長めに取り、三角波ではなく「入り→保持→抜け」の台形カーブを使う
+const STRETCH_DURATION_S = 1.8;
+function stretchEnvelope(p: number): number {
+  const IN = 0.3;
+  const HOLD = 0.6;
+  if (p < IN) return p / IN;
+  if (p < HOLD) return 1;
+  return Math.max(0, 1 - (p - HOLD) / (1 - HOLD));
+}
+// 両腕を真上に伸ばすポーズ。z=0が水平(T-pose)、z=1.2付近が体側の基本姿勢なので、
+// 反対方向にさらに約90°(1.57rad)回して水平を超えさせ、腕を頭上まで振り上げる
+// Playgroundのスライダーで実機確認しながら追い込む前提の初期値(要調整)
+const STRETCH_ARM = { z: -2.15, x: -0.1 }; // 右腕基準。左は z を反転
+const STRETCH_ELBOW = { z: 0.05 };          // 右肘基準。左は z を反転(ほぼ伸ばした状態)
+const STRETCH_SHOULDER = { x: -0.1, z: 0.65 }; // 右肩基準。左は z を反転(肩をすくめ上げる)
+const STRETCH_CHEST_X = -0.15; // 胸を後ろに反らす角度
+export const DEFAULT_STRETCH_POSE = {
+  armX: STRETCH_ARM.x,
+  armZ: STRETCH_ARM.z,
+  elbowZ: STRETCH_ELBOW.z,
+  shoulderX: STRETCH_SHOULDER.x,
+  shoulderZ: STRETCH_SHOULDER.z,
+  chestX: STRETCH_CHEST_X,
+};
+
 // 座り中の腕(手続き型・固定ポーズ)。Mixamoの座りモーションは腕に「髪を触る」ような
 // ジェスチャーが入っていて不自然だったため、腕だけは膝の上に置く固定ポーズで上書きする
 // Playgroundの座り姿勢調整スライダーで実機確認しながら決定した値(2026-07-10)
@@ -148,7 +176,7 @@ export const DEFAULT_SIT_POSE = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, sittingRef, sitPoseRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, sittingRef, sitPoseRef, stretchPoseRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -191,7 +219,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
-  const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
+  const activeAction = useRef<{ tag: "nod" | "tilt" | "stretch"; t: number; dir: 1 | -1 } | null>(null);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -318,31 +346,42 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     sitAction.current?.setEffectiveWeight(sitWeight.current);
     sitMixer.current?.update(delta);
 
-    // 行動タグ由来のアクション（頷く／首をかしげる）: 新規トリガーを検知したら開始
+    // 行動タグ由来のアクション（頷く／首をかしげる／伸び）: 新規トリガーを検知したら開始
     const action = actionRef?.current;
     if (action && action.id !== lastActionId.current) {
       lastActionId.current = action.id;
-      // tiltは左右どちらに傾げるかを毎回ランダムに決める（nodは前後のみなので常に1）
+      // tiltは左右どちらに傾げるかを毎回ランダムに決める（nod/stretchは左右対称なので常に1）
       const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
       activeAction.current = { tag: action.tag, t: 0, dir };
     }
-    if (activeAction.current && neckBone.current) {
+    // 伸びモーションの進行度(0〜1)。腕を動かすため、腕を管理する後段のジェスチャー分岐内で使う
+    // (nod/tiltは他のどの分岐も触らない"neck"だけを動かすのでここで完結できるが、
+    // stretchは腕/肘/肩を使うため、speaking/isWalking/isSitting等と同じ優先度の分岐にする必要がある)
+    let stretchAmount = 0;
+    if (activeAction.current) {
+      const tag = activeAction.current.tag;
+      const duration = tag === "stretch" ? STRETCH_DURATION_S : ACTION_DURATION_S;
       activeAction.current.t += delta;
-      const p = activeAction.current.t / ACTION_DURATION_S;
+      const p = activeAction.current.t / duration;
       if (p >= 1) {
-        neckBone.current.rotation.x = 0;
-        neckBone.current.rotation.z = 0;
+        if (neckBone.current) {
+          neckBone.current.rotation.x = 0;
+          neckBone.current.rotation.z = 0;
+        }
         activeAction.current = null;
-      } else {
+      } else if (tag === "stretch") {
+        stretchAmount = stretchEnvelope(p);
+      } else if (neckBone.current) {
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
-        if (activeAction.current.tag === "nod") {
+        if (tag === "nod") {
           neckBone.current.rotation.x = wave * NOD_ANGLE;
         } else {
           neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }
       }
     }
+    const isStretching = stretchAmount > 0;
 
     let isWalking = false;
     let retreating = false;
@@ -522,7 +561,20 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       }
       wasSittingForArms.current = isSitting;
 
-      if (speaking) {
+      if (isStretching) {
+        // 伸び: 基本姿勢(腕を下ろした状態)から伸びポーズへstretchAmount(0→1→0)で補間する。
+        // 三角波/台形カーブで戻ってくるので、完了後は次フレームから自然に他の分岐(idle等)へ引き継がれる
+        gestureClock.current = 0;
+        const pose = stretchPoseRef?.current ?? DEFAULT_STRETCH_POSE;
+        const a = stretchAmount;
+        lArm.rotation.set(lerp(0.1, pose.armX, a), 0, lerp(-1.2, -pose.armZ, a));
+        lElbow.rotation.set(0, 0, lerp(-0.15, -pose.elbowZ, a));
+        rArm.rotation.set(lerp(0.1, pose.armX, a), 0, lerp(1.2, pose.armZ, a));
+        rElbow.rotation.set(0, 0, lerp(0.15, pose.elbowZ, a));
+        if (lShoulder) lShoulder.rotation.set(lerp(0, pose.shoulderX, a), 0, lerp(0, -pose.shoulderZ, a));
+        if (rShoulder) rShoulder.rotation.set(lerp(0, pose.shoulderX, a), 0, lerp(0, pose.shoulderZ, a));
+        if (chest) chest.rotation.x = lerp(0, pose.chestX, a);
+      } else if (speaking) {
         if (!wasSpeaking.current) {
           // 喋り始めた瞬間にリズムを再抽選 → 毎回違う揺れ方になる
           gestureClock.current = 0;
