@@ -523,11 +523,33 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         rArm.rotation.z = lerp(rArm.rotation.z, 1.2, 0.05);
         rArm.rotation.x = lerp(rArm.rotation.x, 0.1, 0.05);
         rElbow.rotation.z = lerp(rElbow.rotation.z, 0.15, 0.05);
+        if (lShoulder) { lShoulder.rotation.x = lerp(lShoulder.rotation.x, 0, 0.05); lShoulder.rotation.z = lerp(lShoulder.rotation.z, 0, 0.05); }
+        if (rShoulder) { rShoulder.rotation.x = lerp(rShoulder.rotation.x, 0, 0.05); rShoulder.rotation.z = lerp(rShoulder.rotation.z, 0, 0.05); }
       } else if (isWalking && walkAction.current) {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
         // 歩行中の腕振りは歩行クリップ自体にリターゲット済みのMixamoモーションが
-        // 入っている(walkMixer.update()で既に反映済み)ので、ここでは何もしない
+        // 入っている(walkMixer.update()で既に反映済み)ので、基本的にはここでは何もしない。
+        // ただし歩行クリップの重み(walkWeight)が低い間、three.jsのAnimationMixerは
+        // クリップ値と「バインド時点の元の姿勢」を重みで按分するが、その元の姿勢は
+        // 期待していた「腕を下ろした基本姿勢」ではなくT-pose寄りの値になっており、
+        // 座り姿勢から歩行に遷移した直後(weightが0から立ち上がる間)は腕が一瞬
+        // 水平に近い位置まで伸びて見える不具合があった。重みが低いほど強く、
+        // 上がるほど弱く基本姿勢へ引っ張ることで打ち消す(weight→1で寄与はほぼ0になり、
+        // 歩行クリップ本来の腕振りは妨げない)
+        const standPull = Math.max(0, 1 - walkWeight.current) * 0.6;
+        if (standPull > 0) {
+          lArm.rotation.z = lerp(lArm.rotation.z, -1.2, standPull);
+          lArm.rotation.x = lerp(lArm.rotation.x, 0.1, standPull);
+          lElbow.rotation.z = lerp(lElbow.rotation.z, -0.15, standPull);
+          rArm.rotation.z = lerp(rArm.rotation.z, 1.2, standPull);
+          rArm.rotation.x = lerp(rArm.rotation.x, 0.1, standPull);
+          rElbow.rotation.z = lerp(rElbow.rotation.z, 0.15, standPull);
+        }
+        // 肩(鎖骨)は歩行クリップに含まれておらず、座り姿勢の角度が残ったままになる
+        // バグもあったため、ここで基本姿勢へ戻す
+        if (lShoulder) { lShoulder.rotation.x = lerp(lShoulder.rotation.x, 0, 0.08); lShoulder.rotation.z = lerp(lShoulder.rotation.z, 0, 0.08); }
+        if (rShoulder) { rShoulder.rotation.x = lerp(rShoulder.rotation.x, 0, 0.08); rShoulder.rotation.z = lerp(rShoulder.rotation.z, 0, 0.08); }
       } else if (isSitting && sitAction.current) {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
@@ -555,6 +577,8 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         rArm.rotation.z = lerp(rArm.rotation.z, 1.2, 0.05);
         rArm.rotation.x = lerp(rArm.rotation.x, 0.1, 0.05);
         rElbow.rotation.z = lerp(rElbow.rotation.z, 0.15, 0.05);
+        if (lShoulder) { lShoulder.rotation.x = lerp(lShoulder.rotation.x, 0, 0.05); lShoulder.rotation.z = lerp(lShoulder.rotation.z, 0, 0.05); }
+        if (rShoulder) { rShoulder.rotation.x = lerp(rShoulder.rotation.x, 0, 0.05); rShoulder.rotation.z = lerp(rShoulder.rotation.z, 0, 0.05); }
       }
       wasSpeaking.current = speaking;
     }
