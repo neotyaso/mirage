@@ -533,12 +533,18 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         // ただし歩行クリップの重み(walkWeight)が低い間、three.jsのAnimationMixerは
         // クリップ値と「バインド時点の元の姿勢」を重みで按分するが、その元の姿勢は
         // 期待していた「腕を下ろした基本姿勢」ではなくT-pose寄りの値になっており、
-        // 座り姿勢から歩行に遷移した直後(weightが0から立ち上がる間)は腕が一瞬
-        // 水平に近い位置まで伸びて見える不具合があった。重みが低いほど強く、
-        // 上がるほど弱く基本姿勢へ引っ張ることで打ち消す(weight→1で寄与はほぼ0になり、
-        // 歩行クリップ本来の腕振りは妨げない)
-        const standPull = Math.max(0, 1 - walkWeight.current) * 0.6;
-        if (standPull > 0) {
+        // 歩行が始まった直後(weightが0から立ち上がる間、座りからに限らずページ読み込み
+        // 直後の初回徘徊でも同様)は腕が一瞬水平近くまで伸びて見える不具合があった。
+        // lerpでの緩和だけでは低fps環境や初回フレームで収束が間に合わないことがあったため、
+        // 重みが十分低い間は基本姿勢へ直接スナップし、閾値を超えたらlerpに切り替える
+        const STAND_SNAP_THRESHOLD = 0.25;
+        if (walkWeight.current < STAND_SNAP_THRESHOLD) {
+          lArm.rotation.set(0.1, 0, -1.2);
+          lElbow.rotation.set(0, 0, -0.15);
+          rArm.rotation.set(0.1, 0, 1.2);
+          rElbow.rotation.set(0, 0, 0.15);
+        } else {
+          const standPull = Math.max(0, 1 - walkWeight.current) * 0.6;
           lArm.rotation.z = lerp(lArm.rotation.z, -1.2, standPull);
           lArm.rotation.x = lerp(lArm.rotation.x, 0.1, standPull);
           lElbow.rotation.z = lerp(lElbow.rotation.z, -0.15, standPull);
