@@ -4,8 +4,8 @@ import type * as THREE from "three";
 
 const ROOM_URL = "/scene/room.glb";
 
-// 展示ブースの部屋（机・椅子・観葉植物、簡易ジオメトリ）。
-// Avatar.tsxの徘徊ロジック(WANDER_BOUNDS/WANDER_OBSTACLES)がこの部屋の実測レイアウトに
+// 展示ブースの部屋（簡易ジオメトリ）。机・椅子・観葉植物はコード側で除外している(下記参照)。
+// Avatar.tsxの徘徊ロジック(WANDER_BOUNDS)がこの部屋の実測レイアウトに
 // 依存しているため、部屋を差し替える場合はAvatar.tsx側の定数も合わせて調整すること。
 export function Room() {
   const [scene, setScene] = useState<THREE.Group | null>(null);
@@ -14,7 +14,16 @@ export function Room() {
     let alive = true;
     new GLTFLoader().load(
       ROOM_URL,
-      (gltf) => { if (alive) setScene(gltf.scene); },
+      (gltf) => {
+        if (!alive) return;
+        // 椅子・テーブル・観葉植物は撤去(FurnitureRoot配下のChair_*/Table_*/Plant_*という命名のノード群)
+        const toRemove: THREE.Object3D[] = [];
+        gltf.scene.traverse((o) => {
+          if (o.name.startsWith("Chair_") || o.name.startsWith("Table_") || o.name.startsWith("Plant_")) toRemove.push(o);
+        });
+        toRemove.forEach((o) => o.parent?.remove(o));
+        setScene(gltf.scene);
+      },
       undefined,
       (e) => console.error("room.glb load error:", e)
     );

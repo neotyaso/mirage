@@ -10,10 +10,9 @@ import type { FaceCenter, FaceExpression, DistanceZone } from "../hooks/useFaceD
 
 const MODEL_URL = "/avatar/sample.vrm";
 const WALK_URL = "/avatar/walk.vrma";
-const SIT_URL = "/avatar/sit.vrma";
 
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
-// walk/sitと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
+// walkと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
 type GestureTag = "wave" | "drink" | "armsCrossed";
 const GESTURE_URLS: Record<GestureTag, string> = {
   wave: "/avatar/waving.vrma",
@@ -42,10 +41,6 @@ export interface AvatarProps {
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
   actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch" | "wave" | "drink" | "armsCrossed"; id: number } | null>;
-  // 座りモーション(手動プレビュー用)。trueの間sit.vrmaへ重みをブレンドし、椅子の位置に固定する
-  sittingRef?: MutableRefObject<boolean>;
-  // 座り姿勢(腕・肘・肩)のライブ調整用。未指定ならDEFAULT_SIT_POSEを使う
-  sitPoseRef?: MutableRefObject<{ armX: number; armZ: number; elbowZ: number; shoulderX: number; shoulderZ: number }>;
   // 伸びポーズ(腕・肘・肩・胸)のライブ調整用。未指定ならDEFAULT_STRETCH_POSEを使う
   stretchPoseRef?: MutableRefObject<{ armX: number; armZ: number; elbowZ: number; shoulderX: number; shoulderZ: number; chestX: number }>;
 }
@@ -64,60 +59,17 @@ const APPROACH_Z_BACK = -0.4;  // 接近度0：奥で待機
 const APPROACH_Z_FRONT = 0.35; // 接近度1：少しだけ手前
 
 // 誰もいない間、部屋の中をランダムに歩き回る(「生活感」演出)。
-// 範囲・障害物座標はBlenderで作った部屋(public/scene/room.glb)の実測レイアウトに合わせた値
+// 範囲はBlenderで作った部屋(public/scene/room.glb)の実測レイアウトに合わせた値
 const WANDER_BOUNDS = { xMin: -1.5, xMax: 1.5, zMin: -1.6, zMax: 0.5 };
-const TABLE_OBSTACLE = { x: 0.8, z: -0.55, r: 0.75 };
-const CHAIR_OBSTACLE = { x: 1.25, z: -1.15, r: 0.75 };
-const WANDER_OBSTACLES = [TABLE_OBSTACLE, CHAIR_OBSTACLE];
 const WANDER_SPEED = 0.35; // m/s
 const WANDER_ARRIVE_DIST = 0.12;
 const WANDER_PAUSE_MIN = 2;
 const WANDER_PAUSE_MAX = 5;
 
-// 椅子(room.glbのChair_Seat実測値: Blender座標 x=1.25,y=1.15,座面高0.46m → three.js座標に変換)
-// 椅子の背もたれが-Z側にあるため、+Z(部屋の中央・来場者側)を向いて座る
-const CHAIR_POS = { x: 1.25, z: -1.15 };
-const CHAIR_YAW = 0;
-// 椅子の物理的な大きさ(座面0.5m四方+背もたれ)より手前で止まり、歩いて貫通しないようにする。
-// 最後の詰めは着席モーションに合わせて滑らかにスライドさせる(SIT_SETTLE_LERP)
-const CHAIR_ARRIVE_DIST = 0.55;
-const SIT_SETTLE_LERP = 0.08;
-const SIT_Y_OFFSET = -0.35; // Mixamo側の椅子とroom.glbの椅子で座面高さが違うための補正(実機確認で調整)
-const SIT_DURATION_MIN = 6; // 秒。座ってから立ち上がるまでの長さ
-const SIT_DURATION_MAX = 14;
-const GO_SIT_CHANCE = 0.35; // 徘徊の一時停止のたびに椅子へ向かう確率
-
-// 徘徊・移動中に障害物(机・椅子)へ直進してめり込まないよう、近づいたら押し返す。
-// 椅子に座りに行く時は椅子自体は避けたい障害物から除外する(obstaclesで切り替え)
-function avoidObstacles(
-  px: number, pz: number, dirX: number, dirZ: number,
-  obstacles: { x: number; z: number; r: number }[]
-): { x: number; z: number } {
-  let ax = dirX;
-  let az = dirZ;
-  for (const o of obstacles) {
-    const dx = px - o.x;
-    const dz = pz - o.z;
-    const dist = Math.hypot(dx, dz);
-    const margin = o.r + 0.3;
-    if (dist < margin && dist > 0.001) {
-      const push = (margin - dist) / margin;
-      ax += (dx / dist) * push * 1.5;
-      az += (dz / dist) * push * 1.5;
-    }
-  }
-  const len = Math.hypot(ax, az);
-  return len > 0.001 ? { x: ax / len, z: az / len } : { x: dirX, z: dirZ };
-}
-
 function pickWanderTarget(): { x: number; z: number } {
-  for (let i = 0; i < 20; i++) {
-    const x = lerp(WANDER_BOUNDS.xMin, WANDER_BOUNDS.xMax, Math.random());
-    const z = lerp(WANDER_BOUNDS.zMin, WANDER_BOUNDS.zMax, Math.random());
-    const blocked = WANDER_OBSTACLES.some((o) => Math.hypot(x - o.x, z - o.z) < o.r);
-    if (!blocked) return { x, z };
-  }
-  return { x: 0, z: APPROACH_Z_BACK };
+  const x = lerp(WANDER_BOUNDS.xMin, WANDER_BOUNDS.xMax, Math.random());
+  const z = lerp(WANDER_BOUNDS.zMin, WANDER_BOUNDS.zMax, Math.random());
+  return { x, z };
 }
 
 // 表情は中間値を使わず二値判定（しきい値以上でON=1、未満でOFF=0）
@@ -161,21 +113,6 @@ export const DEFAULT_STRETCH_POSE = {
   chestX: STRETCH_CHEST_X,
 };
 
-// 座り中の腕(手続き型・固定ポーズ)。Mixamoの座りモーションは腕に「髪を触る」ような
-// ジェスチャーが入っていて不自然だったため、腕だけは膝の上に置く固定ポーズで上書きする
-// Playgroundの座り姿勢調整スライダーで実機確認しながら決定した値(2026-07-10)
-const SIT_ARM = { z: 1.34, x: -0.91 };  // 右腕基準。左は z を反転
-const SIT_ELBOW = { z: 0.56 };          // 右肘基準。左は z を反転
-const SIT_SHOULDER = { x: -0.25, z: 0.18 }; // 右肩基準。左は z を反転
-// 座り姿勢の初期値(Playgroundのスライダーで上書きされていない時のデフォルト)
-export const DEFAULT_SIT_POSE = {
-  armX: SIT_ARM.x,
-  armZ: SIT_ARM.z,
-  elbowZ: SIT_ELBOW.z,
-  shoulderX: SIT_SHOULDER.x,
-  shoulderZ: SIT_SHOULDER.z,
-};
-
 /**
  * VRMアバターを全身表示する。
  * - まばたき（ランダム間隔）
@@ -189,7 +126,7 @@ export const DEFAULT_SIT_POSE = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, sittingRef, sitPoseRef, stretchPoseRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, stretchPoseRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -215,20 +152,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const walkAction = useRef<THREE.AnimationAction | null>(null);
   const walkClipDuration = useRef(1);
   const walkWeight = useRef(0);
-  // 座りモーション(手動プレビュー用)
-  const sitMixer = useRef<THREE.AnimationMixer | null>(null);
-  const sitAction = useRef<THREE.AnimationAction | null>(null);
-  const sitWeight = useRef(0);
   const wanderTarget = useRef({ x: 0, z: APPROACH_Z_BACK });
   const wanderPauseUntil = useRef(0);
   const bodyYaw = useRef(0);
-  // 椅子に座る行動(不在時のみ)。roam=徘徊 / toChair=椅子へ移動中 / sitting=着席中
-  const chairState = useRef<"roam" | "toChair" | "sitting">("roam");
-  const sitClock = useRef(0);
-  const sitDuration = useRef(SIT_DURATION_MIN);
-  const autoSitting = useRef(false); // 行動AIが決めた着席状態(手動プレビューのsittingRefとは別)
-  const wasManualSitting = useRef(false); // 手動座りプレビューをOFFにした瞬間を検知し、AI徘徊へ復帰させるため
-  const wasSittingForArms = useRef(false); // isSittingがtrue→falseになった瞬間を検知し、腕を強制リセットするため
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
@@ -316,41 +242,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     };
   }, [vrm]);
 
-  // 座りモーションの読み込み(手動プレビュー用)。walkと同じ作り
-  useEffect(() => {
-    if (!vrm) return;
-    let alive = true;
-    const loader = new GLTFLoader();
-    loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
-
-    loader.load(
-      SIT_URL,
-      (gltf) => {
-        if (!alive) return;
-        const vrmAnimations = gltf.userData.vrmAnimations as VRMAnimation[] | undefined;
-        const vrmAnimation = vrmAnimations?.[0];
-        if (!vrmAnimation) return;
-
-        const clip = createVRMAnimationClip(vrmAnimation, vrm);
-        const mixer = new THREE.AnimationMixer(vrm.scene);
-        const action = mixer.clipAction(clip);
-        action.setLoop(THREE.LoopRepeat, Infinity);
-        action.play();
-        action.setEffectiveWeight(0);
-
-        sitMixer.current = mixer;
-        sitAction.current = action;
-      },
-      undefined,
-      (e) => console.error("sit VRMA load error:", e)
-    );
-
-    return () => {
-      alive = false;
-    };
-  }, [vrm]);
-
-  // 単発ジェスチャー(手を振る/飲む/腕組み)クリップの読み込み。walk/sitと違いLoopOnceで、
+  // 単発ジェスチャー(手を振る/飲む/腕組み)クリップの読み込み。walkと違いLoopOnceで、
   // トリガーの度にreset()して最初から再生する
   useEffect(() => {
     if (!vrm) return;
@@ -394,16 +286,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
 
     // 歩行クリップ(腰・脚・背骨)の再生。手続き型の各処理より先に評価し、
     // 腕など手続き型が管理するボーンは後段の処理で上書きされるようにする
-    // ジェスチャー再生中は止める: walk/sitクリップも同じ正規化ボーンを毎フレーム上書きするため、
+    // ジェスチャー再生中は止める: walkクリップも同じ正規化ボーンを毎フレーム上書きするため、
     // weightがほぼ0でも動かし続けるとジェスチャークリップの姿勢が完全に打ち消されて見えなくなる
     if (!activeGesture.current) walkMixer.current?.update(delta);
-
-    // 座りモーション。手動プレビュー(sittingRef)か行動AI(autoSitting)のどちらかがtrueなら重みを乗せる
-    const manualSitting = sittingRef?.current ?? false;
-    const isSitting = manualSitting || autoSitting.current;
-    sitWeight.current = lerp(sitWeight.current, isSitting ? 1 : 0, 0.08);
-    sitAction.current?.setEffectiveWeight(sitWeight.current);
-    if (!activeGesture.current) sitMixer.current?.update(delta);
 
     // 行動タグ由来のアクション（頷く／首をかしげる／伸び／手を振る・飲む・腕組み）: 新規トリガーを検知したら開始
     const action = actionRef?.current;
@@ -451,7 +336,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     }
     // 伸びモーションの進行度(0〜1)。腕を動かすため、腕を管理する後段のジェスチャー分岐内で使う
     // (nod/tiltは他のどの分岐も触らない"neck"だけを動かすのでここで完結できるが、
-    // stretchは腕/肘/肩を使うため、speaking/isWalking/isSitting等と同じ優先度の分岐にする必要がある)
+    // stretchは腕/肘/肩を使うため、speaking/isWalking等と同じ優先度の分岐にする必要がある)
     let stretchAmount = 0;
     if (activeAction.current) {
       const tag = activeAction.current.tag;
@@ -483,114 +368,39 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
 
     if (isGesturing) {
       // 手を振る/飲む/腕組みの再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
-      // isWalkingをtrueにしないことでwalkWeight/sitWeightは自然に0へ収束する
-      autoSitting.current = false;
-    } else if (manualSitting) {
-      // 常時座りプレビュー(Playground手動): AIの徘徊/接近ロジックを止めて椅子の位置に固定し、
-      // 姿勢調整に集中できるようにする(ワープではなく毎フレーム直接代入で完全に静止させる)
-      vrm.scene.position.x = CHAIR_POS.x;
-      vrm.scene.position.z = CHAIR_POS.z;
-      bodyYaw.current = CHAIR_YAW;
-      vrm.scene.rotation.y = CHAIR_YAW;
-      chairState.current = "sitting";
-      autoSitting.current = false;
-      sitClock.current = 0;
-      wasManualSitting.current = true;
+      // isWalkingをtrueにしないことでwalkWeightは自然に0へ収束する
     } else {
-      if (wasManualSitting.current) {
-        // 手動プレビューOFFの瞬間: AI徘徊へ自然に復帰させる
-        wasManualSitting.current = false;
-        chairState.current = "roam";
-        wanderTarget.current = pickWanderTarget();
-        wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
-      }
-
       // 接近演出: 来場者が近いほどキャラが「覗き込む」
       // 体ごとの前後移動は控えめ＋上半身の前傾で寄る → 頭が見切れない
       const zone = getDistanceZone(faceSizeRef?.current ?? 0);
 
       if (zone === "absent") {
-        // 誰もいない間は部屋の中をランダムに歩き回り、時々椅子に座って一息つく
+        // 誰もいない間は部屋の中をランダムに歩き回る(「生活感」演出)
         approach.current = lerp(approach.current, 0, APPROACH_LERP);
 
-        if (chairState.current === "sitting") {
+        const dx = wanderTarget.current.x - vrm.scene.position.x;
+        const dz = wanderTarget.current.z - vrm.scene.position.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (dist < WANDER_ARRIVE_DIST) {
           isWalking = false;
-          autoSitting.current = true;
-          // 立ち止まった位置から座面の正確な位置まで滑らかにスライドさせる(貫通を避けるため手前で止まっているギャップを埋める)
-          vrm.scene.position.x = lerp(vrm.scene.position.x, CHAIR_POS.x, SIT_SETTLE_LERP);
-          vrm.scene.position.z = lerp(vrm.scene.position.z, CHAIR_POS.z, SIT_SETTLE_LERP);
-          bodyYaw.current = lerpAngle(bodyYaw.current, CHAIR_YAW, 0.1);
-          vrm.scene.rotation.y = bodyYaw.current;
-
-          sitClock.current += delta;
-          if (sitClock.current > sitDuration.current) {
-            chairState.current = "roam";
-            // ここで即座にfalseにしないと、次フレーム冒頭のisSitting計算(autoSitting参照)が
-            // 古い値を読んでしまい、chairStateはもう"roam"なのにisSittingだけ1フレーム
-            // 遅れてtrueのまま残ってしまう(腕が座り姿勢のまま固定される一因になっていた)
-            autoSitting.current = false;
-            wanderTarget.current = pickWanderTarget();
+          if (t > wanderPauseUntil.current) {
             wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
-          }
-        } else if (chairState.current === "toChair") {
-          autoSitting.current = false;
-          const dx = CHAIR_POS.x - vrm.scene.position.x;
-          const dz = CHAIR_POS.z - vrm.scene.position.z;
-          const dist = Math.hypot(dx, dz);
-
-          if (dist < CHAIR_ARRIVE_DIST) {
-            isWalking = false;
-            chairState.current = "sitting";
-            sitClock.current = 0;
-            sitDuration.current = lerp(SIT_DURATION_MIN, SIT_DURATION_MAX, Math.random());
-          } else {
-            isWalking = true;
-            // 椅子自体は避ける対象から除外(そこへ向かっているので)。机だけは避ける
-            const avoided = avoidObstacles(vrm.scene.position.x, vrm.scene.position.z, dx / dist, dz / dist, [TABLE_OBSTACLE]);
-            const step = Math.min(WANDER_SPEED * delta, dist);
-            vrm.scene.position.x += avoided.x * step;
-            vrm.scene.position.z += avoided.z * step;
-            const targetYaw = Math.atan2(dx, dz);
-            bodyYaw.current = lerpAngle(bodyYaw.current, targetYaw, 0.08);
-            vrm.scene.rotation.y = bodyYaw.current;
+            wanderTarget.current = pickWanderTarget();
           }
         } else {
-          // roam: 通常の徘徊。一時停止のたびに一定確率で椅子へ向かう
-          autoSitting.current = false;
-          const dx = wanderTarget.current.x - vrm.scene.position.x;
-          const dz = wanderTarget.current.z - vrm.scene.position.z;
-          const dist = Math.hypot(dx, dz);
-
-          if (dist < WANDER_ARRIVE_DIST) {
-            isWalking = false;
-            if (t > wanderPauseUntil.current) {
-              if (Math.random() < GO_SIT_CHANCE) {
-                chairState.current = "toChair";
-              } else {
-                wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
-                wanderTarget.current = pickWanderTarget();
-              }
-            }
-          } else {
-            isWalking = true;
-            const avoided = avoidObstacles(vrm.scene.position.x, vrm.scene.position.z, dx / dist, dz / dist, WANDER_OBSTACLES);
-            const step = Math.min(WANDER_SPEED * delta, dist);
-            vrm.scene.position.x += avoided.x * step;
-            vrm.scene.position.z += avoided.z * step;
-            const targetYaw = Math.atan2(dx, dz);
-            bodyYaw.current = lerpAngle(bodyYaw.current, targetYaw, 0.08);
-            vrm.scene.rotation.y = bodyYaw.current;
-          }
+          isWalking = true;
+          const step = Math.min(WANDER_SPEED * delta, dist);
+          vrm.scene.position.x += (dx / dist) * step;
+          vrm.scene.position.z += (dz / dist) * step;
+          const targetYaw = Math.atan2(dx, dz);
+          bodyYaw.current = lerpAngle(bodyYaw.current, targetYaw, 0.08);
+          vrm.scene.rotation.y = bodyYaw.current;
         }
       } else {
-        // 来場者検知中: 座っていれば中断して立ち上がりつつ、正面(中央)へ戻りながら既存の接近演出を行う。
+        // 来場者検知中: 正面(中央)へ戻りながら接近演出を行う。
         // 徘徊中はscene.position.x/zが部屋のどこにあるか分からないため、
         // 目標値へ直接代入せずlerpで滑らかに近づける(でないと検知した瞬間にワープして見える)
-        if (chairState.current !== "roam") {
-          chairState.current = "roam";
-          sitClock.current = 0;
-        }
-        autoSitting.current = false;
         const approachTarget = ZONE_APPROACH[zone];
         approach.current = lerp(approach.current, approachTarget, APPROACH_LERP);
         const a = approach.current;
@@ -617,8 +427,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       ? (walkAction.current?.time ?? 0) / walkClipDuration.current * Math.PI * 2
       : 0;
     const walkBob = -Math.abs(Math.sin(walkPhase)) * WALK_BOB_AMOUNT * walkWeight.current;
-    // 座高補正: Mixamo側の椅子とroom.glbの椅子で座面の高さが違うため、座り重みに応じて沈める
-    vrm.scene.position.y = Math.sin(t * 1.1) * 0.004 + walkBob + SIT_Y_OFFSET * sitWeight.current;
+    vrm.scene.position.y = Math.sin(t * 1.1) * 0.004 + walkBob;
 
     // 接近時の前傾(覗き込み)演出は、歩行が止まった後に「ピタッと止まって曲がる」ように見えて
     // 違和感が強かったため撤去。spineは歩行クリップ由来の動き以外は基本姿勢のまま
@@ -647,19 +456,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const speaking = speakingRef?.current ?? false;
     const { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder } = gestureBones.current;
     if (lArm && rArm && lElbow && rElbow) {
-      // isSittingがtrue→falseになった"その瞬間"だけ、腕・肘・肩を基本姿勢へ強制的にハードリセットする。
-      // walkWeightのタイミングに依存する補正(このすぐ下のisWalking分岐)だけでは、環境によって
-      // 収束が間に合わず座り姿勢の値が一瞬残ってしまうケースがあったための保険
-      if (wasSittingForArms.current && !isSitting) {
-        lArm.rotation.set(0.1, 0, -1.2);
-        lElbow.rotation.set(0, 0, -0.15);
-        rArm.rotation.set(0.1, 0, 1.2);
-        rElbow.rotation.set(0, 0, 0.15);
-        if (lShoulder) lShoulder.rotation.set(0, 0, 0);
-        if (rShoulder) rShoulder.rotation.set(0, 0, 0);
-      }
-      wasSittingForArms.current = isSitting;
-
       if (isGesturing) {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
@@ -738,23 +534,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         // バグもあったため、ここで基本姿勢へ戻す
         if (lShoulder) { lShoulder.rotation.x = lerp(lShoulder.rotation.x, 0, 0.08); lShoulder.rotation.z = lerp(lShoulder.rotation.z, 0, 0.08); }
         if (rShoulder) { rShoulder.rotation.x = lerp(rShoulder.rotation.x, 0, 0.08); rShoulder.rotation.z = lerp(rShoulder.rotation.z, 0, 0.08); }
-      } else if (isSitting && sitAction.current) {
-        gestureClock.current = 0;
-        if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
-        // sitクリップ自体の腕モーション(髪を触る仕草)は不自然だったため、
-        // 腕だけは膝の上に置く固定ポーズで上書きする(脚・腰・背骨はクリップのまま)。
-        // sitMixerが毎フレームこのボーンをidentityに書き戻すため、lerpの基準にすると
-        // 蓄積されず戻ってしまう→直接代入で毎フレーム上書きする
-        const pose = sitPoseRef?.current ?? DEFAULT_SIT_POSE;
-        lArm.rotation.set(pose.armX, 0, -pose.armZ);
-        lElbow.rotation.set(0, 0, -pose.elbowZ);
-        rArm.rotation.set(pose.armX, 0, pose.armZ);
-        rElbow.rotation.set(0, 0, pose.elbowZ);
-        // sitクリップは肩(鎖骨)ボーンも動かしており、upperArm/lowerArmだけ上書きしても
-        // 肩が持ち上がったまま→腕全体が横に流れて見える原因になっていたのでゼロ付近に戻す
-        // (Playgroundのスライダーで微調整できるようshoulderX/Zも上書き対象にしている)
-        if (lShoulder) lShoulder.rotation.set(pose.shoulderX, 0, -pose.shoulderZ);
-        if (rShoulder) rShoulder.rotation.set(pose.shoulderX, 0, pose.shoulderZ);
       } else {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
