@@ -13,11 +13,12 @@ const WALK_URL = "/avatar/walk.vrma";
 
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
 // walkと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
-type GestureTag = "wave" | "drink" | "armsCrossed";
+type GestureTag = "wave" | "drink" | "armsCrossed" | "stretch";
 const GESTURE_URLS: Record<GestureTag, string> = {
   wave: "/avatar/waving.vrma",
   drink: "/avatar/drinking.vrma",
   armsCrossed: "/avatar/arms_crossed.vrma",
+  stretch: "/avatar/stretch.vrma",
 };
 // クリップの入り/抜けにかける時間(秒)。歩行と同じ理由(重みが低い間はbind pose寄りに流れる)で
 // 腕だけは低weightの間、基本姿勢へスナップする
@@ -40,9 +41,7 @@ export interface AvatarProps {
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
-  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch" | "wave" | "drink" | "armsCrossed"; id: number } | null>;
-  // 伸びポーズ(腕・肘・肩・胸)のライブ調整用。未指定ならDEFAULT_STRETCH_POSEを使う
-  stretchPoseRef?: MutableRefObject<{ armX: number; armZ: number; elbowZ: number; shoulderX: number; shoulderZ: number; chestX: number }>;
+  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "wave" | "drink" | "armsCrossed" | "stretch"; id: number } | null>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -87,32 +86,6 @@ const ACTION_DURATION_S = 0.7;
 const NOD_ANGLE = 0.35;  // ラジアン。頭を下げる角度
 const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 
-// 伸び(手続き型・単発モーション)。腕を上げて少し胸を反らし、少し保持してから戻す。
-// nod/tiltより大きな動きなので尺を長めに取り、三角波ではなく「入り→保持→抜け」の台形カーブを使う
-const STRETCH_DURATION_S = 1.8;
-function stretchEnvelope(p: number): number {
-  const IN = 0.3;
-  const HOLD = 0.6;
-  if (p < IN) return p / IN;
-  if (p < HOLD) return 1;
-  return Math.max(0, 1 - (p - HOLD) / (1 - HOLD));
-}
-// 両腕を真上に伸ばすポーズ。z=0が水平(T-pose)、z=1.2付近が体側の基本姿勢なので、
-// 反対方向にさらに約90°(1.57rad)回して水平を超えさせ、腕を頭上まで振り上げる
-// Playgroundのスライダーで実機確認しながら追い込む前提の初期値(要調整)
-const STRETCH_ARM = { z: -2.15, x: -0.1 }; // 右腕基準。左は z を反転
-const STRETCH_ELBOW = { z: 0.05 };          // 右肘基準。左は z を反転(ほぼ伸ばした状態)
-const STRETCH_SHOULDER = { x: -0.1, z: 0.65 }; // 右肩基準。左は z を反転(肩をすくめ上げる)
-const STRETCH_CHEST_X = -0.15; // 胸を後ろに反らす角度
-export const DEFAULT_STRETCH_POSE = {
-  armX: STRETCH_ARM.x,
-  armZ: STRETCH_ARM.z,
-  elbowZ: STRETCH_ELBOW.z,
-  shoulderX: STRETCH_SHOULDER.x,
-  shoulderZ: STRETCH_SHOULDER.z,
-  chestX: STRETCH_CHEST_X,
-};
-
 /**
  * VRMアバターを全身表示する。
  * - まばたき（ランダム間隔）
@@ -126,7 +99,7 @@ export const DEFAULT_STRETCH_POSE = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, stretchPoseRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -158,7 +131,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
-  const activeAction = useRef<{ tag: "nod" | "tilt" | "stretch"; t: number; dir: 1 | -1 } | null>(null);
+  const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
   // 単発ジェスチャー(手を振る/飲む/腕組み)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
   const gestureMixers = useRef<Partial<Record<GestureTag, THREE.AnimationMixer>>>({});
   const gestureActions = useRef<Partial<Record<GestureTag, THREE.AnimationAction>>>({});
@@ -294,7 +267,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const action = actionRef?.current;
     if (action && action.id !== lastActionId.current) {
       lastActionId.current = action.id;
-      if (action.tag === "wave" || action.tag === "drink" || action.tag === "armsCrossed") {
+      if (action.tag === "wave" || action.tag === "drink" || action.tag === "armsCrossed" || action.tag === "stretch") {
         const clipAction = gestureActions.current[action.tag];
         if (clipAction) {
           clipAction.reset();
@@ -303,7 +276,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
           activeGesture.current = action.tag;
         }
       } else {
-        // tiltは左右どちらに傾げるかを毎回ランダムに決める（nod/stretchは左右対称なので常に1）
+        // tiltは左右どちらに傾げるかを毎回ランダムに決める（nodは左右対称なので常に1）
         const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
         activeAction.current = { tag: action.tag, t: 0, dir };
       }
@@ -334,23 +307,17 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         activeGesture.current = null;
       }
     }
-    // 伸びモーションの進行度(0〜1)。腕を動かすため、腕を管理する後段のジェスチャー分岐内で使う
-    // (nod/tiltは他のどの分岐も触らない"neck"だけを動かすのでここで完結できるが、
-    // stretchは腕/肘/肩を使うため、speaking/isWalking等と同じ優先度の分岐にする必要がある)
-    let stretchAmount = 0;
+    // nod/tiltの進行度。"neck"ボーンだけを動かす単発モーションなのでここで完結する
     if (activeAction.current) {
       const tag = activeAction.current.tag;
-      const duration = tag === "stretch" ? STRETCH_DURATION_S : ACTION_DURATION_S;
       activeAction.current.t += delta;
-      const p = activeAction.current.t / duration;
+      const p = activeAction.current.t / ACTION_DURATION_S;
       if (p >= 1) {
         if (neckBone.current) {
           neckBone.current.rotation.x = 0;
           neckBone.current.rotation.z = 0;
         }
         activeAction.current = null;
-      } else if (tag === "stretch") {
-        stretchAmount = stretchEnvelope(p);
       } else if (neckBone.current) {
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
@@ -361,7 +328,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         }
       }
     }
-    const isStretching = stretchAmount > 0;
 
     let isWalking = false;
     let retreating = false;
@@ -469,19 +435,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
           if (lShoulder) lShoulder.rotation.set(0, 0, 0);
           if (rShoulder) rShoulder.rotation.set(0, 0, 0);
         }
-      } else if (isStretching) {
-        // 伸び: 基本姿勢(腕を下ろした状態)から伸びポーズへstretchAmount(0→1→0)で補間する。
-        // 三角波/台形カーブで戻ってくるので、完了後は次フレームから自然に他の分岐(idle等)へ引き継がれる
-        gestureClock.current = 0;
-        const pose = stretchPoseRef?.current ?? DEFAULT_STRETCH_POSE;
-        const a = stretchAmount;
-        lArm.rotation.set(lerp(0.1, pose.armX, a), 0, lerp(-1.2, -pose.armZ, a));
-        lElbow.rotation.set(0, 0, lerp(-0.15, -pose.elbowZ, a));
-        rArm.rotation.set(lerp(0.1, pose.armX, a), 0, lerp(1.2, pose.armZ, a));
-        rElbow.rotation.set(0, 0, lerp(0.15, pose.elbowZ, a));
-        if (lShoulder) lShoulder.rotation.set(lerp(0, pose.shoulderX, a), 0, lerp(0, -pose.shoulderZ, a));
-        if (rShoulder) rShoulder.rotation.set(lerp(0, pose.shoulderX, a), 0, lerp(0, pose.shoulderZ, a));
-        if (chest) chest.rotation.x = lerp(0, pose.chestX, a);
       } else if (speaking) {
         if (!wasSpeaking.current) {
           // 喋り始めた瞬間にリズムを再抽選 → 毎回違う揺れ方になる
