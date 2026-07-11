@@ -7,3 +7,7 @@ dist-ssr
 .venv
 __pycache__
 *.blend1
+
+# Mixamoの生モーションキャプチャ素材・Blender作業ファイル(再配布規約が不明瞭なためリポジトリに含めない。手元管理)
+tools/*.fbx
+tools/*.blend
