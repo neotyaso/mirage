@@ -7,10 +7,10 @@
 
 ## 次回やること（2026-07-12時点）
 
-1. **「伸び」をMixamoリターゲット版に差し替え**: `tools/arm_stretching_export.vrma`（`tools/Arm Stretching.fbx`から書き出し済み、267フレーム/8.9秒フル）が用意できている。まだコードに未統合。`GESTURE_URLS`に`stretch`タグを追加して`public/avatar/`に配置、既存の手続き型`isStretching`分岐（`STRETCH_ARM`等）をこの本物のクリップに置き換えるかどうかを判断する
+1. ~~「伸び」をMixamoリターゲット版に差し替え~~ ← ✅完了（2026-07-12）。`tools/Arm Stretching.fbx`→`public/avatar/stretch.vrma`として`GESTURE_URLS`に統合、手続き型`isStretching`分岐（`STRETCH_ARM`等）は撤去。Playgroundの「伸びポーズの調整」スライダーも役目を終えたため削除
 2. **腕組み(`armsCrossed`)の扱いを再検討**: 現在の`arms_crossed.vrma`は`tools/Warrior Idle.fbx`由来だが、フルで通しで見ると「腕組み」というより別の待機モーションに近い（本人未確認）。そのままでいいか、別素材を探すか要判断
 3. **シナリオの作り直し**: 椅子・テーブル・観葉植物を部屋から撤去した（下記参照）。休憩演出が無くなった分、待機中の演出をどうするか（何もない空間で徘徊のみにするか、別の小道具・演出を足すか）を明日考える予定（本人談）
-4. Mixamoジェスチャー（手を振る/飲む/腕組み）をLLM自動発火の`ACTION_TAGS`に含めるかどうかは保留のまま
+4. Mixamoジェスチャー（手を振る/飲む/腕組み/伸び）をLLM自動発火の`ACTION_TAGS`に含めるかどうかは保留のまま
 
 ---
 
