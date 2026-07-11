@@ -12,6 +12,19 @@ const MODEL_URL = "/avatar/sample.vrm";
 const WALK_URL = "/avatar/walk.vrma";
 const SIT_URL = "/avatar/sit.vrma";
 
+// 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
+// walk/sitと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
+type GestureTag = "wave" | "drink" | "armsCrossed";
+const GESTURE_URLS: Record<GestureTag, string> = {
+  wave: "/avatar/waving.vrma",
+  drink: "/avatar/drinking.vrma",
+  armsCrossed: "/avatar/arms_crossed.vrma",
+};
+// クリップの入り/抜けにかける時間(秒)。歩行と同じ理由(重みが低い間はbind pose寄りに流れる)で
+// 腕だけは低weightの間、基本姿勢へスナップする
+const GESTURE_FADE_S = 0.25;
+const GESTURE_ARM_SNAP_THRESHOLD = 0.3;
+
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 // 角度の最短経路補間(-π〜π境界をまたぐ時に大回りしないようにする)
@@ -28,7 +41,7 @@ export interface AvatarProps {
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
-  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch"; id: number } | null>;
+  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch" | "wave" | "drink" | "armsCrossed"; id: number } | null>;
   // 座りモーション(手動プレビュー用)。trueの間sit.vrmaへ重みをブレンドし、椅子の位置に固定する
   sittingRef?: MutableRefObject<boolean>;
   // 座り姿勢(腕・肘・肩)のライブ調整用。未指定ならDEFAULT_SIT_POSEを使う
@@ -220,6 +233,12 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
   const activeAction = useRef<{ tag: "nod" | "tilt" | "stretch"; t: number; dir: 1 | -1 } | null>(null);
+  // 単発ジェスチャー(手を振る/飲む/腕組み)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
+  const gestureMixers = useRef<Partial<Record<GestureTag, THREE.AnimationMixer>>>({});
+  const gestureActions = useRef<Partial<Record<GestureTag, THREE.AnimationAction>>>({});
+  const gestureDurations = useRef<Partial<Record<GestureTag, number>>>({});
+  const activeGesture = useRef<GestureTag | null>(null);
+  const gestureWeight = useRef(0);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -331,28 +350,104 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     };
   }, [vrm]);
 
+  // 単発ジェスチャー(手を振る/飲む/腕組み)クリップの読み込み。walk/sitと違いLoopOnceで、
+  // トリガーの度にreset()して最初から再生する
+  useEffect(() => {
+    if (!vrm) return;
+    let alive = true;
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+    (Object.entries(GESTURE_URLS) as [GestureTag, string][]).forEach(([tag, url]) => {
+      loader.load(
+        url,
+        (gltf) => {
+          if (!alive) return;
+          const vrmAnimations = gltf.userData.vrmAnimations as VRMAnimation[] | undefined;
+          const vrmAnimation = vrmAnimations?.[0];
+          if (!vrmAnimation) return;
+
+          const clip = createVRMAnimationClip(vrmAnimation, vrm);
+          const mixer = new THREE.AnimationMixer(vrm.scene);
+          const action = mixer.clipAction(clip);
+          action.setLoop(THREE.LoopOnce, 1);
+          action.clampWhenFinished = true;
+          action.setEffectiveWeight(0);
+
+          gestureMixers.current[tag] = mixer;
+          gestureActions.current[tag] = action;
+          gestureDurations.current[tag] = clip.duration || 1;
+        },
+        undefined,
+        (e) => console.error(`${tag} VRMA load error:`, e)
+      );
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [vrm]);
+
   useFrame((state, delta) => {
     if (!vrm) return;
     const t = state.clock.elapsedTime;
 
     // 歩行クリップ(腰・脚・背骨)の再生。手続き型の各処理より先に評価し、
     // 腕など手続き型が管理するボーンは後段の処理で上書きされるようにする
-    walkMixer.current?.update(delta);
+    // ジェスチャー再生中は止める: walk/sitクリップも同じ正規化ボーンを毎フレーム上書きするため、
+    // weightがほぼ0でも動かし続けるとジェスチャークリップの姿勢が完全に打ち消されて見えなくなる
+    if (!activeGesture.current) walkMixer.current?.update(delta);
 
     // 座りモーション。手動プレビュー(sittingRef)か行動AI(autoSitting)のどちらかがtrueなら重みを乗せる
     const manualSitting = sittingRef?.current ?? false;
     const isSitting = manualSitting || autoSitting.current;
     sitWeight.current = lerp(sitWeight.current, isSitting ? 1 : 0, 0.08);
     sitAction.current?.setEffectiveWeight(sitWeight.current);
-    sitMixer.current?.update(delta);
+    if (!activeGesture.current) sitMixer.current?.update(delta);
 
-    // 行動タグ由来のアクション（頷く／首をかしげる／伸び）: 新規トリガーを検知したら開始
+    // 行動タグ由来のアクション（頷く／首をかしげる／伸び／手を振る・飲む・腕組み）: 新規トリガーを検知したら開始
     const action = actionRef?.current;
     if (action && action.id !== lastActionId.current) {
       lastActionId.current = action.id;
-      // tiltは左右どちらに傾げるかを毎回ランダムに決める（nod/stretchは左右対称なので常に1）
-      const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
-      activeAction.current = { tag: action.tag, t: 0, dir };
+      if (action.tag === "wave" || action.tag === "drink" || action.tag === "armsCrossed") {
+        const clipAction = gestureActions.current[action.tag];
+        if (clipAction) {
+          clipAction.reset();
+          clipAction.setEffectiveWeight(0);
+          clipAction.play();
+          activeGesture.current = action.tag;
+        }
+      } else {
+        // tiltは左右どちらに傾げるかを毎回ランダムに決める（nod/stretchは左右対称なので常に1）
+        const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
+        activeAction.current = { tag: action.tag, t: 0, dir };
+      }
+    }
+
+    // ジェスチャークリップの再生・重み計算（入り/抜けをフェード、終了したら自動停止）
+    let isGesturing = false;
+    if (activeGesture.current) {
+      const tag = activeGesture.current;
+      const mixer = gestureMixers.current[tag];
+      const clipAction = gestureActions.current[tag];
+      const duration = gestureDurations.current[tag] ?? 1;
+      if (mixer && clipAction) {
+        mixer.update(delta);
+        const elapsed = clipAction.time;
+        const fade = Math.min(GESTURE_FADE_S, duration / 4);
+        let w = 1;
+        if (elapsed < fade) w = elapsed / fade;
+        else if (elapsed > duration - fade) w = Math.max(0, (duration - elapsed) / fade);
+        gestureWeight.current = w;
+        clipAction.setEffectiveWeight(w);
+        isGesturing = true;
+        if (elapsed >= duration - 0.001) {
+          activeGesture.current = null;
+          gestureWeight.current = 0;
+        }
+      } else {
+        activeGesture.current = null;
+      }
     }
     // 伸びモーションの進行度(0〜1)。腕を動かすため、腕を管理する後段のジェスチャー分岐内で使う
     // (nod/tiltは他のどの分岐も触らない"neck"だけを動かすのでここで完結できるが、
@@ -386,7 +481,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     let isWalking = false;
     let retreating = false;
 
-    if (manualSitting) {
+    if (isGesturing) {
+      // 手を振る/飲む/腕組みの再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
+      // isWalkingをtrueにしないことでwalkWeight/sitWeightは自然に0へ収束する
+      autoSitting.current = false;
+    } else if (manualSitting) {
       // 常時座りプレビュー(Playground手動): AIの徘徊/接近ロジックを止めて椅子の位置に固定し、
       // 姿勢調整に集中できるようにする(ワープではなく毎フレーム直接代入で完全に静止させる)
       vrm.scene.position.x = CHAIR_POS.x;
@@ -561,7 +660,20 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       }
       wasSittingForArms.current = isSitting;
 
-      if (isStretching) {
+      if (isGesturing) {
+        gestureClock.current = 0;
+        if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
+        // 重みが低い間(入り/抜け)は歩行と同じ理由でbind pose寄りに流れて腕が伸びて見えるため、
+        // 基本姿勢へスナップする。重みが十分高い間はクリップ自身が腕・肩を駆動するので何もしない
+        if (gestureWeight.current < GESTURE_ARM_SNAP_THRESHOLD) {
+          lArm.rotation.set(0.1, 0, -1.2);
+          lElbow.rotation.set(0, 0, -0.15);
+          rArm.rotation.set(0.1, 0, 1.2);
+          rElbow.rotation.set(0, 0, 0.15);
+          if (lShoulder) lShoulder.rotation.set(0, 0, 0);
+          if (rShoulder) rShoulder.rotation.set(0, 0, 0);
+        }
+      } else if (isStretching) {
         // 伸び: 基本姿勢(腕を下ろした状態)から伸びポーズへstretchAmount(0→1→0)で補間する。
         // 三角波/台形カーブで戻ってくるので、完了後は次フレームから自然に他の分岐(idle等)へ引き継がれる
         gestureClock.current = 0;

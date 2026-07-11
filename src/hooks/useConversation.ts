@@ -71,8 +71,9 @@ const SENTENCE_END_RE = /[。！？\n]/g;
 const MIN_CHUNK_CHARS = 6; // これより短い断片は単独でTTSに送らず次の文とマージする（「！」単独送信で不自然にならないように）
 
 // 行動タグ: LLM応答の先頭に付けさせ、読み上げ前に取り除いてキャラの動きに変換する（最小版）
-// "stretch"(伸び)はLLMには使わせず手動トリガー専用のため、型には含めるがACTION_TAGS(LLM検出対象)には含めない
-export type ActionTag = "nod" | "tilt" | "stretch";
+// "stretch"/"wave"/"drink"/"armsCrossed"はLLMには使わせず手動トリガー専用のため、
+// 型には含めるがACTION_TAGS(LLM検出対象)には含めない
+export type ActionTag = "nod" | "tilt" | "stretch" | "wave" | "drink" | "armsCrossed";
 const ACTION_TAGS: ActionTag[] = ["nod", "tilt"];
 const ACTION_TAG_RE = new RegExp(`^\\[(${ACTION_TAGS.join("|")})\\]\\s*`);
 const ACTION_TAG_GIVEUP_CHARS = 10; // これだけ溜まってもタグの形になっていなければ「タグなし」と諦める

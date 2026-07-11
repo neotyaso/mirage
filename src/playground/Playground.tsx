@@ -130,8 +130,8 @@ export function Playground() {
 
   // 行動タグ: LLM([nod]/[tilt]タグ由来)と手動ボタンで同じrefを共有する。
   // 手動分は負のidにして、hook内部の連番(正)と衝突しないようにする
-  // ("stretch"はLLMには使わせておらず手動トリガー専用)
-  function triggerAction(tag: "nod" | "tilt" | "stretch") {
+  // ("stretch"/"wave"/"drink"/"armsCrossed"はLLMには使わせておらず手動トリガー専用)
+  function triggerAction(tag: "nod" | "tilt" | "stretch" | "wave" | "drink" | "armsCrossed") {
     conv.actionRef.current = { tag, id: -Date.now() };
   }
 
@@ -311,6 +311,21 @@ export function Playground() {
             </button>
             <button onClick={() => triggerAction("stretch")} style={{ ...btnStyle, background: "#374151" }}>
               伸びる
+            </button>
+          </div>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>Mixamoリターゲット済みジェスチャー（本日追加・検討中）</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => triggerAction("wave")} style={{ ...btnStyle, background: "#374151" }}>
+              手を振る
+            </button>
+            <button onClick={() => triggerAction("drink")} style={{ ...btnStyle, background: "#374151" }}>
+              飲む
+            </button>
+            <button onClick={() => triggerAction("armsCrossed")} style={{ ...btnStyle, background: "#374151" }}>
+              腕組み(Warrior Idle)
             </button>
           </div>
         </div>
