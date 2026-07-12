@@ -4,6 +4,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Avatar } from "../components/Avatar";
 import { Room } from "../components/Room";
+import { Glow } from "../components/Glow";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
 import { useConversation } from "../hooks/useConversation";
@@ -132,6 +133,7 @@ export function Playground() {
             actionRef={conv.actionRef}
           />
         </Suspense>
+        <Glow />
       </Canvas>
 
       {/* 検出用カメラ（カメラON時のみ表示） */}
