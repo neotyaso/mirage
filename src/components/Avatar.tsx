@@ -13,11 +13,8 @@ const WALK_URL = "/avatar/walk.vrma";
 
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
 // walkと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
-type GestureTag = "wave" | "drink" | "armsCrossed" | "stretch";
+type GestureTag = "stretch";
 const GESTURE_URLS: Record<GestureTag, string> = {
-  wave: "/avatar/waving.vrma",
-  drink: "/avatar/drinking.vrma",
-  armsCrossed: "/avatar/arms_crossed.vrma",
   stretch: "/avatar/stretch.vrma",
 };
 // クリップの入り/抜けにかける時間(秒)。歩行と同じ理由(重みが低い間はbind pose寄りに流れる)で
@@ -27,6 +24,11 @@ const GESTURE_ARM_SNAP_THRESHOLD = 0.3;
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+// タブがバックグラウンドで長時間放置されると次にフォアグラウンドに戻った瞬間のdeltaが
+// 数秒単位に膨れ上がり、AnimationMixerのクリップ時間が一気に飛んで(ジェスチャーが一瞬で
+// 終了直前まで進む等)、フリーズしたように見える不具合があった。1フレームあたりの経過時間を
+// 上限でクランプし、以降のlerp/mixer.updateすべてに波及しないようにする
+const MAX_DELTA_S = 1 / 20;
 // 角度の最短経路補間(-π〜π境界をまたぐ時に大回りしないようにする)
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
@@ -41,7 +43,7 @@ export interface AvatarProps {
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
-  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "wave" | "drink" | "armsCrossed" | "stretch"; id: number } | null>;
+  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch"; id: number } | null>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -64,6 +66,9 @@ const WANDER_SPEED = 0.35; // m/s
 const WANDER_ARRIVE_DIST = 0.12;
 const WANDER_PAUSE_MIN = 2;
 const WANDER_PAUSE_MAX = 5;
+// 徘徊の一時停止のたびに低確率でこのどれかを挟む(「ただ突っ立ってるだけ」を防ぐ生活感演出)
+const IDLE_GESTURE_CHANCE = 0.4;
+const IDLE_GESTURE_TAGS = ["stretch", "nod", "tilt"] as const;
 
 function pickWanderTarget(): { x: number; z: number } {
   const x = lerp(WANDER_BOUNDS.xMin, WANDER_BOUNDS.xMax, Math.random());
@@ -127,12 +132,14 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const walkWeight = useRef(0);
   const wanderTarget = useRef({ x: 0, z: APPROACH_Z_BACK });
   const wanderPauseUntil = useRef(0);
+  // 徘徊が「歩いている→止まった」に切り替わった瞬間を検知するための前フレーム値
+  const prevWanderWalking = useRef(true);
   const bodyYaw = useRef(0);
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
   const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
-  // 単発ジェスチャー(手を振る/飲む/腕組み)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
+  // 単発ジェスチャー(伸び)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
   const gestureMixers = useRef<Partial<Record<GestureTag, THREE.AnimationMixer>>>({});
   const gestureActions = useRef<Partial<Record<GestureTag, THREE.AnimationAction>>>({});
   const gestureDurations = useRef<Partial<Record<GestureTag, number>>>({});
@@ -215,7 +222,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     };
   }, [vrm]);
 
-  // 単発ジェスチャー(手を振る/飲む/腕組み)クリップの読み込み。walkと違いLoopOnceで、
+  // 単発ジェスチャー(伸び等)クリップの読み込み。walkと違いLoopOnceで、
   // トリガーの度にreset()して最初から再生する
   useEffect(() => {
     if (!vrm) return;
@@ -253,8 +260,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     };
   }, [vrm]);
 
-  useFrame((state, delta) => {
+  useFrame((state, rawDelta) => {
     if (!vrm) return;
+    const delta = Math.min(rawDelta, MAX_DELTA_S);
     const t = state.clock.elapsedTime;
 
     // 歩行クリップ(腰・脚・背骨)の再生。手続き型の各処理より先に評価し、
@@ -263,23 +271,28 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // weightがほぼ0でも動かし続けるとジェスチャークリップの姿勢が完全に打ち消されて見えなくなる
     if (!activeGesture.current) walkMixer.current?.update(delta);
 
-    // 行動タグ由来のアクション（頷く／首をかしげる／伸び／手を振る・飲む・腕組み）: 新規トリガーを検知したら開始
-    const action = actionRef?.current;
-    if (action && action.id !== lastActionId.current) {
-      lastActionId.current = action.id;
-      if (action.tag === "wave" || action.tag === "drink" || action.tag === "armsCrossed" || action.tag === "stretch") {
-        const clipAction = gestureActions.current[action.tag];
+    // 単発アクションの発火処理（外部トリガー・徘徊中の生活感演出のどちらからも呼ぶ共通処理）
+    function triggerAction(tag: "stretch" | "nod" | "tilt") {
+      if (tag === "stretch") {
+        const clipAction = gestureActions.current[tag];
         if (clipAction) {
           clipAction.reset();
           clipAction.setEffectiveWeight(0);
           clipAction.play();
-          activeGesture.current = action.tag;
+          activeGesture.current = tag;
         }
       } else {
         // tiltは左右どちらに傾げるかを毎回ランダムに決める（nodは左右対称なので常に1）
-        const dir: 1 | -1 = action.tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
-        activeAction.current = { tag: action.tag, t: 0, dir };
+        const dir: 1 | -1 = tag === "tilt" && Math.random() < 0.5 ? -1 : 1;
+        activeAction.current = { tag, t: 0, dir };
       }
+    }
+
+    // 行動タグ由来のアクション（頷く／首をかしげる／伸び）: 新規トリガーを検知したら開始
+    const action = actionRef?.current;
+    if (action && action.id !== lastActionId.current) {
+      lastActionId.current = action.id;
+      triggerAction(action.tag);
     }
 
     // ジェスチャークリップの再生・重み計算（入り/抜けをフェード、終了したら自動停止）
@@ -333,7 +346,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     let retreating = false;
 
     if (isGesturing) {
-      // 手を振る/飲む/腕組みの再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
+      // 伸び再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
       // isWalkingをtrueにしないことでwalkWeightは自然に0へ収束する
     } else {
       // 接近演出: 来場者が近いほどキャラが「覗き込む」
@@ -349,6 +362,12 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const dist = Math.hypot(dx, dz);
 
         if (dist < WANDER_ARRIVE_DIST) {
+          // 歩いていた状態から止まった瞬間だけ、低確率で伸び/頷く/首かしげるのどれかを挟む
+          // (「ただ突っ立ってるだけ」を防ぐ生活感演出。waveは対象外)
+          if (prevWanderWalking.current && Math.random() < IDLE_GESTURE_CHANCE) {
+            const pick = IDLE_GESTURE_TAGS[Math.floor(Math.random() * IDLE_GESTURE_TAGS.length)];
+            triggerAction(pick);
+          }
           isWalking = false;
           if (t > wanderPauseUntil.current) {
             wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
@@ -363,6 +382,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
           bodyYaw.current = lerpAngle(bodyYaw.current, targetYaw, 0.08);
           vrm.scene.rotation.y = bodyYaw.current;
         }
+        prevWanderWalking.current = isWalking;
       } else {
         // 来場者検知中: 正面(中央)へ戻りながら接近演出を行う。
         // 徘徊中はscene.position.x/zが部屋のどこにあるか分からないため、
