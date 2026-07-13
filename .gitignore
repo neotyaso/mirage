@@ -11,3 +11,6 @@ __pycache__
 # Mixamoの生モーションキャプチャ素材・Blender作業ファイル(再配布規約が不明瞭なためリポジトリに含めない。手元管理)
 tools/*.fbx
 tools/*.blend
+
+# ネストしたgitリポジトリ(TripoSGパイプライン、独自に.venv/モデルウェイトを持つワークスペース)
+tools/img3d/
