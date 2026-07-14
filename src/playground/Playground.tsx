@@ -130,6 +130,7 @@ export function Playground() {
             expressionRef={expressionRef}
             faceSizeRef={faceSizeRef}
             actionRef={conv.actionRef}
+            conversing={conv.state !== "idle"}
           />
         </Suspense>
       </Canvas>

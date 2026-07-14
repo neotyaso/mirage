@@ -10,7 +10,7 @@ import type { ConvState } from "./hooks/useConversation";
 import type { MutableRefObject } from "react";
 
 // Off-axis カメラ: 来場者の顔位置でカメラが動き「3Dの窓」効果を生む
-const CAM_BASE: [number, number, number] = [0, 0.9, 3];
+const CAM_BASE: [number, number, number] = [0, 1.1, 3];
 const CAM_RANGE_X = 0.8; // 顔が端にいると左右±0.8m動く
 const CAM_RANGE_Y = 0.35;
 const CAM_LERP = 0.06; // 追従の滑らかさ（小さいほど遅れる）
@@ -31,7 +31,7 @@ function OffAxisCamera({ faceCenterRef }: { faceCenterRef: MutableRefObject<Face
     camera.position.z = CAM_BASE[2];
 
     // カメラは常にシーン中央（キャラの腰付近）を向く
-    camera.lookAt(0, 0.9, 0);
+    camera.lookAt(0, 1.1, 0);
   });
 
   return null;
@@ -383,7 +383,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <Room />
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
         </Suspense>
       </Canvas>
 
@@ -439,6 +439,14 @@ export default function App() {
               } else {
                 setPaused(true);
                 speechSynthesis.cancel();
+                // 呼び込み/驚き等のセリフ(speak())がAivisSpeechで再生中の場合、
+                // stopConversation()はuseConversation側の音声しか止めないため、
+                // App.tsx自前のactiveSourceRefも明示的に止める必要がある
+                if (activeSourceRef.current) {
+                  try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
+                  activeSourceRef.current.ctx.close().catch(() => {});
+                  activeSourceRef.current = null;
+                }
                 speakingRef.current = false;
                 volumeRef.current = 0;
                 if (convState !== "idle") stopConversation();

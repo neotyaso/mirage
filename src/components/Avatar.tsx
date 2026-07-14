@@ -47,6 +47,10 @@ export interface AvatarProps {
   // デバッグ用「⏸ 停止」ボタンでtrueになる。歩行・接近/徘徊などの移動だけを止めて
   // その場に固まらせる（瞬き・呼吸・リップシンク等の待機アニメは止めない）
   paused?: boolean;
+  // 会話中(convState !== "idle")はtrue。話している最中に来場者の姿勢のわずかな変化で
+  // 距離ゾーンがmid/near間を行き来し、勝手に歩き出す/後ずさりするのを防ぐため、
+  // 会話中は接近/徘徊の位置更新を止める（頷く等の身振りは止めない）
+  conversing?: boolean;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -109,7 +113,7 @@ const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, paused }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -350,9 +354,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     let isWalking = false;
     let retreating = false;
 
-    if (paused) {
-      // デバッグの「⏸ 停止」中: 歩行・接近/徘徊は一切更新せずその場に固まらせる
-      // (isWalkingをfalseのままにしておくことでwalkWeightが自然に0へ収束する)
+    if (paused || conversing) {
+      // デバッグの「⏸ 停止」中、または会話中(conversing): 歩行・接近/徘徊は一切更新せず
+      // その場に固まらせる(isWalkingをfalseのままにしておくことでwalkWeightが自然に0へ収束する)。
+      // 会話中に止めるのは、来場者の姿勢のわずかな変化で距離ゾーンがmid/near間を行き来し、
+      // 勝手に歩き出す/後ずさりするのを防ぐため
     } else if (isGesturing) {
       // 伸び再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
       // isWalkingをtrueにしないことでwalkWeightは自然に0へ収束する

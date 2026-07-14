@@ -46,12 +46,19 @@ function isWhisperHallucination(text: string): boolean {
 // 「はい」「うん」等の短い相槌はWHISPER_HALLUCINATION_PATTERNSに含めていないため
 // 単語ブラックリストでは弾けない。代わりにWhisper自身が付与する「無音らしさ」スコア
 // (no_speech_prob、verbose_json形式でのみ取得可)を見て、実際は無音/環境音だったのに
-// もっともらしい短い単語をでっち上げたケースだけを弾く（本物の相槌はスコアが低いので通る）
-const NO_SPEECH_PROB_THRESHOLD = 0.6;
+// もっともらしい短い単語をでっち上げたケースだけを弾く（本物の相槌はスコアが低いので通る）。
+// 「はい」のような1〜2語の短い相槌は、無音からのハルシネーションの典型パターンなので
+// より低いno_speech_probでも疑わしいと判定する（長い文はより高い確信度を要求し誤爆を防ぐ）
+const NO_SPEECH_PROB_THRESHOLD = 0.5;
+const SHORT_TEXT_NO_SPEECH_THRESHOLD = 0.3;
+const SHORT_TEXT_MAX_CHARS = 4; // 「はい」「うん」「はいはい」等を想定
 interface WhisperVerboseSegment { no_speech_prob?: number }
-function isLikelyNoSpeech(segments: WhisperVerboseSegment[] | undefined): boolean {
+function isLikelyNoSpeech(text: string, segments: WhisperVerboseSegment[] | undefined): boolean {
   if (!segments || segments.length === 0) return false;
-  return segments.every((s) => (s.no_speech_prob ?? 0) >= NO_SPEECH_PROB_THRESHOLD);
+  const threshold = text.trim().length <= SHORT_TEXT_MAX_CHARS
+    ? SHORT_TEXT_NO_SPEECH_THRESHOLD
+    : NO_SPEECH_PROB_THRESHOLD;
+  return segments.every((s) => (s.no_speech_prob ?? 0) >= threshold);
 }
 
 // 沈黙が続いたときレムから振る話題（LLMを呼ばず即再生。応答速度優先＆会話履歴を汚さない）
@@ -463,7 +470,7 @@ export function useConversation(
           if (!res.ok) throw new Error(`groq stt ${res.status}`);
           const json = await res.json();
           text = json.text ?? "";
-          if (text && isLikelyNoSpeech(json.segments)) {
+          if (text && isLikelyNoSpeech(text, json.segments)) {
             console.warn("Whisper no-speech filtered:", text, json.segments);
             text = "";
           }
