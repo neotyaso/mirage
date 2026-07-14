@@ -43,6 +43,17 @@ function isWhisperHallucination(text: string): boolean {
   return WHISPER_HALLUCINATION_PATTERNS.some((re) => re.test(text));
 }
 
+// 「はい」「うん」等の短い相槌はWHISPER_HALLUCINATION_PATTERNSに含めていないため
+// 単語ブラックリストでは弾けない。代わりにWhisper自身が付与する「無音らしさ」スコア
+// (no_speech_prob、verbose_json形式でのみ取得可)を見て、実際は無音/環境音だったのに
+// もっともらしい短い単語をでっち上げたケースだけを弾く（本物の相槌はスコアが低いので通る）
+const NO_SPEECH_PROB_THRESHOLD = 0.6;
+interface WhisperVerboseSegment { no_speech_prob?: number }
+function isLikelyNoSpeech(segments: WhisperVerboseSegment[] | undefined): boolean {
+  if (!segments || segments.length === 0) return false;
+  return segments.every((s) => (s.no_speech_prob ?? 0) >= NO_SPEECH_PROB_THRESHOLD);
+}
+
 // 沈黙が続いたときレムから振る話題（LLMを呼ばず即再生。応答速度優先＆会話履歴を汚さない）
 const NUDGE_LINES = [
   "ねえ、黙っちゃったらさみしいって！なんか話してよ〜",
@@ -443,15 +454,22 @@ export function useConversation(
       form.append("file", blob, "audio.webm");
       form.append("model", GROQ_STT_MODEL);
       form.append("language", "ja");
+      form.append("response_format", "verbose_json");
       try {
         setState("thinking");
         let text = "";
         try {
           const res = await fetch(GROQ_STT_URL, { method: "POST", body: form });
           if (!res.ok) throw new Error(`groq stt ${res.status}`);
-          text = (await res.json()).text ?? "";
+          const json = await res.json();
+          text = json.text ?? "";
+          if (text && isLikelyNoSpeech(json.segments)) {
+            console.warn("Whisper no-speech filtered:", text, json.segments);
+            text = "";
+          }
         } catch {
           // Groqが失敗（ネット切断・障害等）→ ローカルSTTへフォールバック
+          // (ローカルサーバーはno_speech_probを返さないため、この判定は対象外)
           const localForm = new FormData();
           localForm.append("audio", blob, "audio.webm");
           const res2 = await fetch(LOCAL_STT_URL, { method: "POST", body: localForm });

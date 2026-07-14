@@ -383,7 +383,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <Room />
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} />
         </Suspense>
       </Canvas>
 
@@ -441,6 +441,7 @@ export default function App() {
                 speechSynthesis.cancel();
                 speakingRef.current = false;
                 volumeRef.current = 0;
+                if (convState !== "idle") stopConversation();
               }
             }}
           >
@@ -469,7 +470,7 @@ export default function App() {
       {debugMode && (
         <div style={hudStyle}>
           cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
-          {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {started ? "稼働中" : "停止中"}
+          {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {!started ? "停止中" : paused ? "一時停止中" : "稼働中"}
         </div>
       )}
     </div>

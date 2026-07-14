@@ -3,6 +3,10 @@ import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { Matrix4, Quaternion, Euler, Vector3 } from "three";
 
 const ABSENCE_GRACE_MS = 600;
+// 顔幅(faceSizeRef)の平滑化係数。生のバウンディングボックス幅は首を振る/俯く等の
+// 一瞬の姿勢変化だけでもガクッと変動し、距離ゾーン(getDistanceZone)の閾値をまたいで
+// キャラが急に歩き出す/後ずさりする原因になっていた。指数移動平均で軽くならす
+const FACE_SIZE_SMOOTHING = 0.35;
 
 export interface FaceCenter {
   x: number; // 0〜1（左→右）
@@ -129,7 +133,10 @@ export function useFaceDetection(enabled: boolean = true) {
 
           allFaceCentersRef.current = centers;
           faceCenterRef.current = centers[primaryIdx] ?? null;
-          faceSizeRef.current = widths[primaryIdx] ?? 0;
+          const rawWidth = widths[primaryIdx] ?? 0;
+          faceSizeRef.current = faceSizeRef.current === 0
+            ? rawWidth
+            : faceSizeRef.current + (rawWidth - faceSizeRef.current) * FACE_SIZE_SMOOTHING;
 
           // 頭の向き(yaw)を主対象の顔変換行列から抽出（そっぽを向いたか判定するため）
           const matrixData = transforms[primaryIdx]?.data;
