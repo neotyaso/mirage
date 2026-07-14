@@ -4,7 +4,6 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
 import { Avatar } from "../components/Avatar";
 import { Room } from "../components/Room";
-import { Glow } from "../components/Glow";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
 import { useConversation } from "../hooks/useConversation";
@@ -109,14 +108,14 @@ export function Playground() {
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#15151f" }}>
+    <div style={{ position: "fixed", inset: 0, background: "#f0ebe0" }}>
       <Canvas camera={{ position: [0, 1.1, 3], fov: 35 }}>
-        <color attach="background" args={["#15151f"]} />
-        <ambientLight intensity={0.7} />
-        <directionalLight position={[2, 4, 3]} intensity={1.3} />
-        <directionalLight position={[-3, 2, -2]} intensity={0.5} color="#88aaff" />
+        <color attach="background" args={["#f0ebe0"]} />
+        <ambientLight intensity={0.9} />
+        <directionalLight position={[2, 4, 3]} intensity={1.4} color="#fff4e0" />
+        <directionalLight position={[-3, 2, -2]} intensity={0.4} color="#ffe8c8" />
 
-        <Grid args={[10, 10]} position={[0, 0, 0]} cellColor="#334" sectionColor="#556" />
+        <Grid args={[10, 10]} position={[0, 0, 0]} cellColor="#d8d0c0" sectionColor="#b8ac94" />
         <OrbitControls target={[0, 1, 0]} />
         <VolumeDriver speaking={speaking} volumeRef={volumeRef} />
 
@@ -133,7 +132,6 @@ export function Playground() {
             actionRef={conv.actionRef}
           />
         </Suspense>
-        <Glow />
       </Canvas>
 
       {/* 検出用カメラ（カメラON時のみ表示） */}

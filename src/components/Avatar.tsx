@@ -60,8 +60,10 @@ const APPROACH_Z_BACK = -0.4;  // 接近度0：奥で待機
 const APPROACH_Z_FRONT = 0.35; // 接近度1：少しだけ手前
 
 // 誰もいない間、部屋の中をランダムに歩き回る(「生活感」演出)。
-// 範囲はBlenderで作った部屋(public/scene/room.glb)の実測レイアウトに合わせた値
-const WANDER_BOUNDS = { xMin: -1.5, xMax: 1.5, zMin: -1.6, zMax: 0.5 };
+// 範囲はBlenderで作った部屋(public/scene/room.glb)の実測レイアウトに合わせた値。
+// 奥右コーナー(x=1.82, z=-1.78付近)に観葉植物(DecoPlant)を置いているため、
+// 個別の障害物回避はせずxMax/zMinをその分小さくしてキャラが近寄らないようにしている
+const WANDER_BOUNDS = { xMin: -1.5, xMax: 1.2, zMin: -1.3, zMax: 0.5 };
 const WANDER_SPEED = 0.35; // m/s
 const WANDER_ARRIVE_DIST = 0.12;
 const WANDER_PAUSE_MIN = 2;
@@ -384,21 +386,36 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         }
         prevWanderWalking.current = isWalking;
       } else {
-        // 来場者検知中: 正面(中央)へ戻りながら接近演出を行う。
-        // 徘徊中はscene.position.x/zが部屋のどこにあるか分からないため、
-        // 目標値へ直接代入せずlerpで滑らかに近づける(でないと検知した瞬間にワープして見える)
+        // 来場者検知中: 正面(中央)へ戻りながら接近演出を行う
         const approachTarget = ZONE_APPROACH[zone];
         approach.current = lerp(approach.current, approachTarget, APPROACH_LERP);
         const a = approach.current;
         const targetZ = lerp(APPROACH_Z_BACK, APPROACH_Z_FRONT, a);
-        vrm.scene.position.z = lerp(vrm.scene.position.z, targetZ, 0.05);
-        vrm.scene.position.x = lerp(vrm.scene.position.x, 0, 0.05);
-        bodyYaw.current = lerpAngle(bodyYaw.current, 0, 0.05);
+
+        const dx = 0 - vrm.scene.position.x;
+        const dz = targetZ - vrm.scene.position.z;
+        const dist = Math.hypot(dx, dz);
+        const returningFromWander = dist > 0.05;
+
+        if (returningFromWander) {
+          // 徘徊位置が部屋のどこにあるか分からないため、目標値へ直接lerpすると
+          // 移動方向と体の向きが噛み合わず「滑って瞬間移動したように」見えてしまう。
+          // 徘徊時と同じく、実際に歩く速度(WANDER_SPEED)で移動方向を向いて歩かせる
+          const step = Math.min(WANDER_SPEED * delta, dist);
+          vrm.scene.position.x += (dx / dist) * step;
+          vrm.scene.position.z += (dz / dist) * step;
+          const targetYaw = Math.atan2(dx, dz);
+          bodyYaw.current = lerpAngle(bodyYaw.current, targetYaw, 0.08);
+        } else {
+          // 中央付近に着いたら、来場者の方(正面)を向いてわずかな前後（覗き込み）だけ滑らかに
+          vrm.scene.position.z = lerp(vrm.scene.position.z, targetZ, 0.05);
+          vrm.scene.position.x = lerp(vrm.scene.position.x, 0, 0.05);
+          bodyYaw.current = lerpAngle(bodyYaw.current, 0, 0.05);
+        }
         vrm.scene.rotation.y = bodyYaw.current;
 
         const approaching = approachTarget > approach.current + 0.03;
         retreating = approachTarget < approach.current - 0.03;
-        const returningFromWander = Math.abs(vrm.scene.position.x) > 0.05 || Math.abs(vrm.scene.position.z - targetZ) > 0.05;
         isWalking = approaching || retreating || returningFromWander;
       }
     }

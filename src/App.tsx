@@ -3,7 +3,6 @@ import type { CSSProperties } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Avatar } from "./components/Avatar";
 import { Room } from "./components/Room";
-import { Glow } from "./components/Glow";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
@@ -373,12 +372,12 @@ export default function App() {
   return (
     <div style={{ position: "fixed", inset: 0 }}>
       <Canvas camera={{ position: CAM_BASE, fov: 35 }}>
-        <color attach="background" args={["#15151f"]} />
-        <fog attach="fog" args={["#15151f", 4, 9]} />
+        <color attach="background" args={["#f0ebe0"]} />
+        <fog attach="fog" args={["#f0ebe0", 4, 9]} />
 
-        <ambientLight intensity={0.7} />
-        <directionalLight position={[2, 4, 3]} intensity={1.3} />
-        <directionalLight position={[-3, 2, -2]} intensity={0.5} color="#88aaff" />
+        <ambientLight intensity={0.9} />
+        <directionalLight position={[2, 4, 3]} intensity={1.4} color="#fff4e0" />
+        <directionalLight position={[-3, 2, -2]} intensity={0.4} color="#ffe8c8" />
 
         <OffAxisCamera faceCenterRef={faceCenterRef} />
 
@@ -386,7 +385,6 @@ export default function App() {
           <Room />
           <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} />
         </Suspense>
-        <Glow />
       </Canvas>
 
       {/* 会話ログ（左側に流れるチャット） */}
