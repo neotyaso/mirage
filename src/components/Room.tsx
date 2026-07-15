@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type * as THREE from "three";
+import { RoomWindow } from "./Window";
 
 const ROOM_URL = "/scene/room.glb";
 
@@ -30,6 +31,11 @@ export function Room() {
     return () => { alive = false; };
   }, []);
 
-  if (!scene) return null;
-  return <primitive object={scene} />;
+  return (
+    <>
+      {scene && <primitive object={scene} />}
+      {/* 奥壁の「外が見える窓」（room.glbには入れずThree.jsで直接描く） */}
+      <RoomWindow />
+    </>
+  );
 }

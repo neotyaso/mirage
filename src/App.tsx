@@ -3,6 +3,8 @@ import type { CSSProperties } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Avatar } from "./components/Avatar";
 import { Room } from "./components/Room";
+import { WindowFrame } from "./components/WindowFrame";
+import { Ambience } from "./components/Ambience";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
@@ -367,17 +369,21 @@ export default function App() {
     setStarted(true);
     callOut("mid"); // 音声解放を兼ねた初回発話
     lastCall.current = performance.now();
+    // 展示用: ブラウザのタブ・ブックマーク・URLバーを隠して「窓の中の別世界」への没入感を上げる。
+    // 全画面APIはユーザー操作(このボタン押下)を起点にしないと拒否されるため、ここで呼ぶ
+    document.documentElement.requestFullscreen?.().catch(() => {});
   }
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
       <Canvas camera={{ position: CAM_BASE, fov: 35 }}>
-        <color attach="background" args={["#f0ebe0"]} />
-        <fog attach="fog" args={["#f0ebe0", 4, 9]} />
+        {/* 明るいナチュラルは維持しつつ、背景・光を少しだけ暖色寄りに（落ち着いた昼下がりの居室感） */}
+        <color attach="background" args={["#f2e8d4"]} />
+        <fog attach="fog" args={["#f2e8d4", 4, 9]} />
 
-        <ambientLight intensity={0.9} />
-        <directionalLight position={[2, 4, 3]} intensity={1.4} color="#fff4e0" />
-        <directionalLight position={[-3, 2, -2]} intensity={0.4} color="#ffe8c8" />
+        <ambientLight intensity={0.9} color="#fff3e2" />
+        <directionalLight position={[2, 4, 3]} intensity={1.4} color="#ffedc8" />
+        <directionalLight position={[-3, 2, -2]} intensity={0.42} color="#ffe0b6" />
 
         <OffAxisCamera faceCenterRef={faceCenterRef} />
 
@@ -386,6 +392,13 @@ export default function App() {
           <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
         </Suspense>
       </Canvas>
+
+      {/* 画面を「窓」に見せる枠オーバーレイ（off-axisカメラの視差で覗き込み感を強める）。
+          デバッグ中はHUD/ボタンを隠さないよう非表示 */}
+      {!debugMode && <WindowFrame />}
+
+      {/* 環境音（小音量）。稼働中のみ。展示スタートのクリックが音声解放を兼ねる */}
+      <Ambience active={started && !paused} />
 
       {/* 会話ログ（左側に流れるチャット） */}
       {started && log.length > 0 && (

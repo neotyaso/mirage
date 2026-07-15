@@ -2,7 +2,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
-import { Avatar } from "../components/Avatar";
+import { Avatar, DEFAULT_BECKON_POSE } from "../components/Avatar";
+import type { BeckonPose } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
@@ -42,6 +43,15 @@ export function Playground() {
   const [smile, setSmile] = useState(0);
   const [surprised, setSurprised] = useState(0);
 
+  // 手招みポーズのライブ調整（座り/伸びと同じ方式）。スライダー→refでAvatarに即反映
+  const [beckonPose, setBeckonPose] = useState<BeckonPose>({ ...DEFAULT_BECKON_POSE });
+  const beckonPoseRef = useRef<BeckonPose>({ ...DEFAULT_BECKON_POSE });
+  function setBeckonField(k: keyof BeckonPose, v: number) {
+    const next = { ...beckonPoseRef.current, [k]: v };
+    beckonPoseRef.current = next;
+    setBeckonPose(next);
+  }
+
   // ---- カメラ(実顔検出) ----
   const [cameraOn, setCameraOn] = useState(false);
   const cam = useFaceDetection(cameraOn);
@@ -80,7 +90,7 @@ export function Playground() {
   // 行動タグ: LLM([nod]/[tilt]タグ由来)と手動ボタンで同じrefを共有する。
   // 手動分は負のidにして、hook内部の連番(正)と衝突しないようにする
   // ("stretch"はLLMには使わせておらず手動トリガー専用)
-  function triggerAction(tag: "nod" | "tilt" | "stretch") {
+  function triggerAction(tag: "nod" | "tilt" | "stretch" | "beckon") {
     conv.actionRef.current = { tag, id: -Date.now() };
   }
 
@@ -131,6 +141,7 @@ export function Playground() {
             faceSizeRef={faceSizeRef}
             actionRef={conv.actionRef}
             conversing={conv.state !== "idle"}
+            beckonPoseRef={beckonPoseRef}
           />
         </Suspense>
       </Canvas>
@@ -231,7 +242,38 @@ export function Playground() {
             <button onClick={() => triggerAction("stretch")} style={{ ...btnStyle, background: "#374151" }}>
               伸びる
             </button>
+            <button onClick={() => triggerAction("beckon")} style={{ ...btnStyle, background: "#374151" }}>
+              手招き
+            </button>
           </div>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>手招みポーズ調整（「手招き」を押して動きを見ながら）</span>
+          {([
+            ["armZ", "上腕 上下(小=上)", -10, 10],
+            ["armX", "上腕 前後", -10, 10],
+            ["elbowZ", "肘 曲げ", -10, 10],
+            ["foreTwist", "前腕ひねり(手のひら)", -10, 10],
+            ["handRoll", "手首ひねり", -10, 10],
+            ["sway", "振り幅", 0, 10],
+            ["hz", "振る速さ", 0.1, 10],
+            ["shoulderZ", "肩 持ち上げ", -10, 10],
+          ] as [keyof BeckonPose, string, number, number][]).map(([k, label, min, max]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ ...labelStyle, minWidth: 148, fontSize: 11 }}>{label} {beckonPose[k].toFixed(2)}</span>
+              <input
+                type="range" min={min} max={max} step={0.02} value={beckonPose[k]}
+                onChange={(e) => setBeckonField(k, Number(e.target.value))} style={{ flex: 1 }}
+              />
+            </div>
+          ))}
+          <button
+            onClick={() => navigator.clipboard.writeText(JSON.stringify(beckonPose))}
+            style={{ ...btnStyle, background: "#374151", marginTop: 4 }}
+          >
+            値をコピー
+          </button>
         </div>
 
         <div style={rowStyle}>

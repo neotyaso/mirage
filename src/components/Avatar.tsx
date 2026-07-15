@@ -43,7 +43,7 @@ export interface AvatarProps {
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う
-  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch"; id: number } | null>;
+  actionRef?: MutableRefObject<{ tag: "nod" | "tilt" | "stretch" | "beckon"; id: number } | null>;
   // デバッグ用「⏸ 停止」ボタンでtrueになる。歩行・接近/徘徊などの移動だけを止めて
   // その場に固まらせる（瞬き・呼吸・リップシンク等の待機アニメは止めない）
   paused?: boolean;
@@ -51,6 +51,8 @@ export interface AvatarProps {
   // 距離ゾーンがmid/near間を行き来し、勝手に歩き出す/後ずさりするのを防ぐため、
   // 会話中は接近/徘徊の位置更新を止める（頷く等の身振りは止めない）
   conversing?: boolean;
+  // 手招みポーズのライブ上書き（Playgroundのスライダー用）。未指定ならDEFAULT_BECKON_POSE
+  beckonPoseRef?: MutableRefObject<BeckonPose>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -100,6 +102,48 @@ const ACTION_DURATION_S = 0.7;
 const NOD_ANGLE = 0.35;  // ラジアン。頭を下げる角度
 const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 
+// 手招き(procedural): 「やあ！こっち！」と手を振る呼び込み動作。
+// Mixamoリターゲット(Blender)を避け、右腕・肘・手首の回転を直接算出する手続き型で実装する。
+// 棒立ちで腕全体を振るのでなく、肘を曲げて手のひらを来場者に向け、前腕〜手をゆっくり振る自然なwave。
+// 入り(ramp up)→保持(手を振る)→抜け(基本姿勢へ)の台形エンベロープ
+const BECKON_IN_S = 0.4;
+const BECKON_HOLD_S = 1.7;
+const BECKON_OUT_S = 0.45;
+const BECKON_DURATION_S = BECKON_IN_S + BECKON_HOLD_S + BECKON_OUT_S;
+// 手招みのポーズ値。Playgroundのスライダーからライブ上書きできるよう、定数でなくオブジェクトにする
+// （座り/伸びポーズと同じ方式）。App本番はDEFAULTがそのまま使われる
+export interface BeckonPose {
+  armZ: number;      // 上腕の上下（基本1.2=下ろした状態→負で水平より上へ）
+  armX: number;      // 上腕の前後（正で前へ）
+  elbowZ: number;    // 肘の曲げ（大きいほど深く曲がる）
+  foreTwist: number; // 前腕のひねり（手のひらの向き。rElbow.y）
+  handRoll: number;  // 手首のひねり（手のひらの向き微調整。rHand.z）
+  sway: number;      // 手を振る振幅（上腕を左右に振る）
+  hz: number;        // 手を振る速さ(Hz)
+  shoulderZ: number; // 肩の持ち上げ
+}
+export const DEFAULT_BECKON_POSE: BeckonPose = {
+  armZ: -0.96, armX: 0.22, elbowZ: -0.66, foreTwist: 1.1, handRoll: -1.26, sway: 0.38, hz: 0.68, shoulderZ: 0.22,
+};
+// 棒立ち回避: 手を振る間の上体のゆるい揺れ・わずかな前傾（呼び込む姿勢）
+const BECKON_BODY_SWAY = 0.05;      // 胸の左右揺れ
+const BECKON_LEAN = 0.06;           // わずかに前傾
+
+// 来場者を検知した瞬間の「気づき」演出（その場でピタッ→正面へ振り向く→驚き→笑顔→手招き）。
+// このコンセプトの心臓部: 自分の生活をしていた子が"あなた"に気づく瞬間を明確なドラマにする
+const NOTICE_DURATION_S = 2.0;      // 演出全体の長さ（手招きと揃える）
+const NOTICE_ABSENT_MIN_S = 1.0;    // これだけ「不在」が続いた後の検知だけを新規来場とみなす（顔検出のチラつき再発火を防ぐ）
+const NOTICE_COOLDOWN_S = 8.0;      // 連続発火防止
+const NOTICE_SURPRISE_S = 0.45;     // 最初のこの秒数は surprised、その後 happy に切り替え
+const NOTICE_TURN_LERP = 0.16;      // 振り向きの速さ（通常の接近時より速くピボットさせ「ハッと振り向く」印象に）
+const NOTICE_GAZE_LERP = 0.2;       // 気づいた瞬間は視線を素早く来場者にロックする（普段は下記の緩やかな値）
+const GAZE_LERP = 0.08;             // 通常時の視線追従の滑らかさ（0.06→0.08で少し「吸い付く」感）
+// 首の追従: 目/頭のLookAtに加えて首(neck)も来場者へ向ける＝「ぬるっと吸い付いて追う」の肝。
+// 首が向き全体の一部だけをこなし、残りは目/頭のLookAtが補う（首が回りすぎると不自然なため）
+const NECK_FOLLOW_FRAC = 0.55;      // 首がこなす向きの割合
+const NECK_FOLLOW_MAX = 0.42;       // 首の最大ヨー(ラジアン、約24°)。振り向きすぎ防止
+const NECK_FOLLOW_LERP = 0.09;      // 首追従の滑らかさ
+
 /**
  * VRMアバターを全身表示する。
  * - まばたき（ランダム間隔）
@@ -113,7 +157,7 @@ const TILT_ANGLE = 0.3;  // ラジアン。頭を傾ける角度
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -129,6 +173,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     rElbow?: THREE.Object3D | null;
     lShoulder?: THREE.Object3D | null;
     rShoulder?: THREE.Object3D | null;
+    rHand?: THREE.Object3D | null;
   }>({});
   const gestureClock = useRef(0);
   const wasSpeaking = useRef(false);
@@ -154,6 +199,13 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const gestureDurations = useRef<Partial<Record<GestureTag, number>>>({});
   const activeGesture = useRef<GestureTag | null>(null);
   const gestureWeight = useRef(0);
+  // 手招き(procedural)の再生位置。BECKON_DURATION_S以上＝非アクティブ
+  const beckonT = useRef(BECKON_DURATION_S + 1);
+  // 「気づき」演出の状態管理
+  const noticeUntil = useRef(0);        // この時刻まで気づき演出中
+  const noticeStart = useRef(0);        // 演出開始時刻（surprised→happyの切替判定用）
+  const absentSince = useRef(0);        // 「不在」が始まった時刻（0=在席中）
+  const noticeCooldownUntil = useRef(0);// 連続発火防止
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -176,12 +228,13 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const rElbow = h?.getNormalizedBoneNode("rightLowerArm");
         const lShoulder = h?.getNormalizedBoneNode("leftShoulder");
         const rShoulder = h?.getNormalizedBoneNode("rightShoulder");
+        const rHand = h?.getNormalizedBoneNode("rightHand"); // 手招きで手のひらの向きを調整するのに使う
         if (lArm) { lArm.rotation.z = -1.2; lArm.rotation.x = 0.1; }
         if (rArm) { rArm.rotation.z =  1.2; rArm.rotation.x = 0.1; }
         // 肘を軽く曲げる（より自然に）
         if (lElbow) lElbow.rotation.z = -0.15;
         if (rElbow) rElbow.rotation.z =  0.15;
-        gestureBones.current = { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder };
+        gestureBones.current = { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder, rHand };
         neckBone.current = h?.getNormalizedBoneNode("neck") ?? null;
 
         if (alive) setVrm(loaded);
@@ -280,9 +333,18 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // weightがほぼ0でも動かし続けるとジェスチャークリップの姿勢が完全に打ち消されて見えなくなる
     if (!activeGesture.current) walkMixer.current?.update(delta);
 
-    // 単発アクションの発火処理（外部トリガー・徘徊中の生活感演出のどちらからも呼ぶ共通処理）
-    function triggerAction(tag: "stretch" | "nod" | "tilt") {
-      if (tag === "stretch") {
+    // 単発アクションの発火処理（外部トリガー・徘徊中の生活感演出・気づき演出のどれからも呼ぶ共通処理）
+    function triggerAction(tag: "stretch" | "nod" | "tilt" | "beckon") {
+      if (tag === "beckon") {
+        beckonT.current = 0; // 手招きを頭から再生
+        // 伸び等のクリップが再生中だと脚・体が競合するので止める（手招みは上体だけの動作）
+        if (activeGesture.current) {
+          gestureActions.current[activeGesture.current]?.stop();
+          activeGesture.current = null;
+          gestureWeight.current = 0;
+        }
+        activeAction.current = null;
+      } else if (tag === "stretch") {
         const clipAction = gestureActions.current[tag];
         if (clipAction) {
           clipAction.reset();
@@ -354,18 +416,54 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     let isWalking = false;
     let retreating = false;
 
+    // 現在の距離ゾーン（気づき演出の検知・接近演出の両方で使う）
+    const zoneNow = getDistanceZone(faceSizeRef?.current ?? 0);
+
+    // 「気づき」演出のトリガー: 一定時間の不在のあと来場者を検知した“その瞬間”だけ発火する。
+    // （顔検出が一瞬途切れて戻るたびに再発火しないよう、NOTICE_ABSENT_MIN_S以上の不在を要求）
+    if (zoneNow === "absent") {
+      if (absentSince.current === 0) absentSince.current = t;
+    } else {
+      if (
+        absentSince.current > 0 &&
+        t - absentSince.current > NOTICE_ABSENT_MIN_S &&
+        t > noticeCooldownUntil.current &&
+        !paused && !conversing
+      ) {
+        noticeUntil.current = t + NOTICE_DURATION_S;
+        noticeStart.current = t;
+        noticeCooldownUntil.current = t + NOTICE_COOLDOWN_S;
+        triggerAction("beckon"); // ハッと気づいて「おいで」と手招き
+      }
+      absentSince.current = 0;
+    }
+    const noticing = t < noticeUntil.current;
+
+    // 手招きの再生位置。notice演出・手動トリガーのどちらからでも動く。beckonTimeは進める前の値
+    const beckoning = beckonT.current < BECKON_DURATION_S;
+    const beckonTime = beckonT.current;
+    if (beckoning) beckonT.current += delta;
+
     if (paused || conversing) {
       // デバッグの「⏸ 停止」中、または会話中(conversing): 歩行・接近/徘徊は一切更新せず
       // その場に固まらせる(isWalkingをfalseのままにしておくことでwalkWeightが自然に0へ収束する)。
       // 会話中に止めるのは、来場者の姿勢のわずかな変化で距離ゾーンがmid/near間を行き来し、
       // 勝手に歩き出す/後ずさりするのを防ぐため
+    } else if (noticing || beckoning) {
+      // 気づき/手招き中: その場に固まり、来場者(正面=yaw0)へ素早く振り向く。
+      // 位置は更新せず“いま居る場所から呼び込む”（＝広い会場で人を見つけて手招きする呼び込み嬢の動き）。
+      // 手招みの腕モーションは後段のアーム処理が担当する
+      approach.current = lerp(approach.current, ZONE_APPROACH[zoneNow], APPROACH_LERP);
+      bodyYaw.current = lerpAngle(bodyYaw.current, 0, NOTICE_TURN_LERP);
+      vrm.scene.rotation.y = bodyYaw.current;
+      isWalking = false;
     } else if (isGesturing) {
       // 伸び再生中は静止し、クリップ自身(腰・脚・腕)に専念させる。
       // isWalkingをtrueにしないことでwalkWeightは自然に0へ収束する
     } else {
       // 接近演出: 来場者が近いほどキャラが「覗き込む」
       // 体ごとの前後移動は控えめ＋上半身の前傾で寄る → 頭が見切れない
-      const zone = getDistanceZone(faceSizeRef?.current ?? 0);
+      const zone = zoneNow;
 
       if (zone === "absent") {
         // 誰もいない間は部屋の中をランダムに歩き回る(「生活感」演出)
@@ -462,16 +560,59 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const targetX = fc ? lerp(-1.5, 1.5, 1 - fc.x) : 0; // カメラは鏡像なので反転
     const targetY = fc ? lerp(2.5, 0.5, fc.y) : 1.5;
     const targetZ = 2;
-    lookAtTarget.current.position.x = lerp(lookAtTarget.current.position.x, targetX, 0.05);
-    lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, 0.05);
+    // 気づいた瞬間は視線を素早く来場者にロック（「私を見てる」を強く感じさせる）。普段は緩やかに追う
+    const gazeLerp = noticing ? NOTICE_GAZE_LERP : GAZE_LERP;
+    lookAtTarget.current.position.x = lerp(lookAtTarget.current.position.x, targetX, gazeLerp);
+    lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, gazeLerp);
     lookAtTarget.current.position.z = targetZ;
+
+    // 首(neck)の追従: 目/頭のLookAtに加えて首も来場者へ向ける＝「吸い付いて追う」感。
+    // nod/tiltは neck.x/z を使うので、ここでは干渉しない neck.y(ヨー) だけを動かす。
+    // 首は向き全体の一部(NECK_FOLLOW_FRAC)だけこなし、残りは頭のLookAtが補うので回りすぎない
+    if (neckBone.current) {
+      let neckYawTarget = 0;
+      if (fc) {
+        const dx = targetX - vrm.scene.position.x;
+        const dz = targetZ - vrm.scene.position.z;
+        const rel = Math.atan2(dx, dz) - bodyYaw.current; // 体の向きに対する相対ヨー
+        const relNorm = Math.atan2(Math.sin(rel), Math.cos(rel)); // 最短経路へ正規化
+        neckYawTarget = Math.max(-NECK_FOLLOW_MAX, Math.min(NECK_FOLLOW_MAX, relNorm * NECK_FOLLOW_FRAC));
+      }
+      const neckLerp = noticing ? NOTICE_GAZE_LERP : NECK_FOLLOW_LERP;
+      neckBone.current.rotation.y = lerp(neckBone.current.rotation.y, neckYawTarget, neckLerp);
+    }
 
     // 発話中のジェスチャー: 腕は基本姿勢のまま、体だけ横揺れさせる
     // (腕を交互に上げる仕草・腕組み等のポーズ切替はどちらも不自然だったため撤去)
     const speaking = speakingRef?.current ?? false;
-    const { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder } = gestureBones.current;
+    const { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder, rHand } = gestureBones.current;
     if (lArm && rArm && lElbow && rElbow) {
-      if (isGesturing) {
+      if (beckoning) {
+        // 手招き（procedural）: 上腕で肘を上げ(静的)、肘を曲げて前腕を立て、その前腕〜手をゆっくり振る。
+        // 手のひらは手首のひねりで来場者へ向ける。左腕は基本姿勢のまま。
+        // 入り/抜けは台形エンベロープ(w)で基本姿勢との間を補間するので突然ポーズが飛ばない
+        gestureClock.current = 0;
+        let w: number;
+        if (beckonTime < BECKON_IN_S) w = beckonTime / BECKON_IN_S;
+        else if (beckonTime > BECKON_IN_S + BECKON_HOLD_S) w = Math.max(0, (BECKON_DURATION_S - beckonTime) / BECKON_OUT_S);
+        else w = 1;
+        const bp = beckonPoseRef?.current ?? DEFAULT_BECKON_POSE;
+        const holdT = Math.max(0, beckonTime - BECKON_IN_S);
+        const swing = Math.sin(holdT * bp.hz * Math.PI * 2); // -1〜1
+        // 上腕を上げてZ軸で左右にゆっくり振る＝手を振る。肘を曲げ、前腕/手首のひねりで手のひらを来場者へ
+        rArm.rotation.set(lerp(0.1, bp.armX, w), 0, lerp(1.2, bp.armZ + swing * bp.sway, w));
+        rElbow.rotation.set(0, lerp(0, bp.foreTwist, w), lerp(0.15, bp.elbowZ, w));
+        if (rHand) rHand.rotation.set(0, 0, lerp(0, bp.handRoll, w)); // 手のひらを来場者へ
+        lArm.rotation.set(0.1, 0, -1.2);
+        lElbow.rotation.set(0, 0, -0.15);
+        if (rShoulder) rShoulder.rotation.set(0, 0, lerp(0, bp.shoulderZ, w));
+        if (lShoulder) lShoulder.rotation.set(0, 0, 0);
+        // 棒立ち回避: 上体をゆるく揺らし、わずかに前傾して呼び込む
+        if (chest) {
+          chest.rotation.z = Math.sin(holdT * bp.hz * Math.PI) * BECKON_BODY_SWAY * w;
+          chest.rotation.x = lerp(chest.rotation.x, BECKON_LEAN * w, 0.1);
+        }
+      } else if (isGesturing) {
         gestureClock.current = 0;
         if (chest) chest.rotation.z = lerp(chest.rotation.z, 0, 0.05);
         // 重みが低い間(入り/抜け)は歩行と同じ理由でbind pose寄りに流れて腕が伸びて見えるため、
@@ -577,15 +718,25 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       mouth.current = lerp(mouth.current, target, 0.35);
       em.setValue("aa", mouth.current);
 
-      // 来場者の表情に共感：笑顔→happy、驚き→surprised
-      // どちらも中間値は使わず、しきい値を超えたら1・それ以外は0の二値判定にする
-      const expr = expressionRef?.current;
-      if (expr) {
-        const smileOn = expr.smile >= SMILE_THRESHOLD;
-        const surprisedOn = expr.surprised >= SURPRISED_THRESHOLD;
-        // リップシンク中はhappyを控えめに（口モーフと競合するため）
-        em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
-        em.setValue("surprised", surprisedOn ? 0.8 : 0);
+      if (noticing) {
+        // 気づき演出中は来場者の表情に関係なく強制上書き:
+        // 最初のNOTICE_SURPRISE_S秒は「ハッ」と驚き、その後は「見つけた！」の笑顔にパッと切り替える
+        const nt = t - noticeStart.current;
+        const surprisePhase = nt < NOTICE_SURPRISE_S;
+        em.setValue("surprised", surprisePhase ? 0.9 : 0);
+        // 呼び込みセリフ発話中は口モーフ(aa)と競合するのでhappyを控えめに
+        em.setValue("happy", surprisePhase ? 0 : (speaking ? 0.5 : 0.9));
+      } else {
+        // 来場者の表情に共感：笑顔→happy、驚き→surprised
+        // どちらも中間値は使わず、しきい値を超えたら1・それ以外は0の二値判定にする
+        const expr = expressionRef?.current;
+        if (expr) {
+          const smileOn = expr.smile >= SMILE_THRESHOLD;
+          const surprisedOn = expr.surprised >= SURPRISED_THRESHOLD;
+          // リップシンク中はhappyを控えめに（口モーフと競合するため）
+          em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
+          em.setValue("surprised", surprisedOn ? 0.8 : 0);
+        }
       }
     }
 
