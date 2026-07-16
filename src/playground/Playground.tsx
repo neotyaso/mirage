@@ -42,6 +42,10 @@ export function Playground() {
   const [speaking, setSpeaking] = useState(false);
   const [smile, setSmile] = useState(0);
   const [surprised, setSurprised] = useState(0);
+  // 実STT/LLM/TTSを起動せず「会話中(conversing)」状態だけを擬似的にAvatarへ渡すデバッグ用トグル。
+  // 「徘徊で後ろを向いた瞬間に会話が始まると背中を向けたまま動かない」系のバグを、
+  // マイク/LLMなしで再現・確認するために使う（不在→徘徊で後ろを向かせ→擬似会話ONで検証）
+  const [fakeConversing, setFakeConversing] = useState(false);
 
   // 手招みポーズのライブ調整（座り/伸びと同じ方式）。スライダー→refでAvatarに即反映
   const [beckonPose, setBeckonPose] = useState<BeckonPose>({ ...DEFAULT_BECKON_POSE });
@@ -140,7 +144,7 @@ export function Playground() {
             expressionRef={expressionRef}
             faceSizeRef={faceSizeRef}
             actionRef={conv.actionRef}
-            conversing={conv.state !== "idle"}
+            conversing={conv.state !== "idle" || fakeConversing}
             beckonPoseRef={beckonPoseRef}
           />
         </Suspense>
@@ -222,6 +226,14 @@ export function Playground() {
           <button onClick={toggleSpeaking} style={{ ...btnStyle, background: speaking ? "#ef4444" : "#374151" }}>
             {speaking ? "■ 停止" : "▶ 話す"}
           </button>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>会話中フラグ（擬似・向き固定バグ確認用）</span>
+          <button onClick={() => setFakeConversing((v) => !v)} style={{ ...btnStyle, background: fakeConversing ? "#ef4444" : "#374151" }}>
+            {fakeConversing ? "■ 会話中OFF" : "🗣 会話中ON"}
+          </button>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>不在で後ろ向きにさせてからONにすると、こちらへ向き直るか確認できる</span>
         </div>
 
         <div style={rowStyle}>

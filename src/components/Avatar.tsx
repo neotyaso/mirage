@@ -34,6 +34,13 @@ function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
   return a + diff * t;
 }
+// 「1フレームあたりrate60ずつ近づける」という60fps前提の率を、実際のdelta(秒)に応じた
+// 率へ変換する。気づき演出の振り向き/視線ロックは音声合成等と同時に走ってフレームレートが
+// 落ちやすく、delta非依存のまま低fps下だと「演出時間内にほとんど回転しない」ことがあった
+// （フレーム数そのものが足りないため）。実時間で収束速度を保証するために使う
+function damp(rate60: number, delta: number): number {
+  return 1 - Math.pow(1 - rate60, delta * 60);
+}
 
 export interface AvatarProps {
   speakingRef?: MutableRefObject<boolean>;
@@ -444,17 +451,42 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const beckonTime = beckonT.current;
     if (beckoning) beckonT.current += delta;
 
-    if (paused || conversing) {
-      // デバッグの「⏸ 停止」中、または会話中(conversing): 歩行・接近/徘徊は一切更新せず
-      // その場に固まらせる(isWalkingをfalseのままにしておくことでwalkWeightが自然に0へ収束する)。
-      // 会話中に止めるのは、来場者の姿勢のわずかな変化で距離ゾーンがmid/near間を行き来し、
-      // 勝手に歩き出す/後ずさりするのを防ぐため
+    if (paused) {
+      // デバッグの「⏸ 停止」中: 歩行・接近/徘徊・向きすべて更新せずその場に完全に固める
+      // (isWalkingをfalseのままにしておくことでwalkWeightが自然に0へ収束する)
+    } else if (conversing) {
+      // 会話中(conversing): 会話は「中央・真正面」でしたいので、固定の会話位置(中央・手前)へ
+      // 歩いて寄ってから正面を向く。
+      // 端で会話が始まっても隅で喋り続けないように寄せる。ターゲットは常に固定点(中央)なので、
+      // 距離ゾーンがmid/near間を行き来しても振動しない（＝ゾーン依存の接近/後退で勝手に前後する
+      // 元の不具合は起こさない。だから「位置を丸ごと止める」必要はなく、固定点へ寄せる方が自然）。
+      // 【重要バグ修正】以前は位置と向きをまとめて止めていたため、徘徊で後ろを向いた瞬間に
+      // 「不在→near」で一気に会話が始まると(気づき演出とほぼ同時にApp側がnearゾーンで会話開始)、
+      // 背中を向けたまま驚き表情＋手招み(どちらも別セクションで再生される)だけが出て、
+      // 体が一切こちらを向かない状態になっていた。
+      approach.current = lerp(approach.current, 1, APPROACH_LERP);
+      const dx = 0 - vrm.scene.position.x;
+      const dz = APPROACH_Z_FRONT - vrm.scene.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.05) {
+        // 端にいたら中央へ歩いて寄る（徘徊と同じ速度・進行方向を向く）
+        const step = Math.min(WANDER_SPEED * delta, dist);
+        vrm.scene.position.x += (dx / dist) * step;
+        vrm.scene.position.z += (dz / dist) * step;
+        bodyYaw.current = lerpAngle(bodyYaw.current, Math.atan2(dx, dz), 0.08);
+        isWalking = true;
+      } else {
+        // 中央に着いたら来場者(正面=yaw0)を向いて喋る
+        bodyYaw.current = lerpAngle(bodyYaw.current, 0, damp(NOTICE_TURN_LERP, delta));
+        isWalking = false;
+      }
+      vrm.scene.rotation.y = bodyYaw.current;
     } else if (noticing || beckoning) {
       // 気づき/手招き中: その場に固まり、来場者(正面=yaw0)へ素早く振り向く。
       // 位置は更新せず“いま居る場所から呼び込む”（＝広い会場で人を見つけて手招きする呼び込み嬢の動き）。
       // 手招みの腕モーションは後段のアーム処理が担当する
       approach.current = lerp(approach.current, ZONE_APPROACH[zoneNow], APPROACH_LERP);
-      bodyYaw.current = lerpAngle(bodyYaw.current, 0, NOTICE_TURN_LERP);
+      bodyYaw.current = lerpAngle(bodyYaw.current, 0, damp(NOTICE_TURN_LERP, delta));
       vrm.scene.rotation.y = bodyYaw.current;
       isWalking = false;
     } else if (isGesturing) {
@@ -561,7 +593,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const targetY = fc ? lerp(2.5, 0.5, fc.y) : 1.5;
     const targetZ = 2;
     // 気づいた瞬間は視線を素早く来場者にロック（「私を見てる」を強く感じさせる）。普段は緩やかに追う
-    const gazeLerp = noticing ? NOTICE_GAZE_LERP : GAZE_LERP;
+    const gazeLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : GAZE_LERP;
     lookAtTarget.current.position.x = lerp(lookAtTarget.current.position.x, targetX, gazeLerp);
     lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, gazeLerp);
     lookAtTarget.current.position.z = targetZ;
@@ -578,7 +610,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const relNorm = Math.atan2(Math.sin(rel), Math.cos(rel)); // 最短経路へ正規化
         neckYawTarget = Math.max(-NECK_FOLLOW_MAX, Math.min(NECK_FOLLOW_MAX, relNorm * NECK_FOLLOW_FRAC));
       }
-      const neckLerp = noticing ? NOTICE_GAZE_LERP : NECK_FOLLOW_LERP;
+      const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : NECK_FOLLOW_LERP;
       neckBone.current.rotation.y = lerp(neckBone.current.rotation.y, neckYawTarget, neckLerp);
     }
 
