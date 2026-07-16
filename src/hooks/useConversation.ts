@@ -78,6 +78,8 @@ function cleanupCalloutLine(raw: string): string {
   // 顔文字・絵文字・末尾の記号が混ざったら軽く落とす（読み上げの邪魔になるため）
   s = s.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "").trim();
   if (s.length > 40) return ""; // 長すぎ＝指示に従えていない → 捨てる
+  // プロンプトで禁止しても稀に紛れる男っぽい荒い語尾（キャラの声と合わない）は保険で弾く
+  if (/だぜ|だぞ[！!。.]?$/.test(s)) return "";
   return s;
 }
 
@@ -436,7 +438,7 @@ export function useConversation(
     calloutBusyRef.current = true;
     const hour = new Date().getHours();
     const tod = hour < 11 ? "午前" : hour < 15 ? "お昼" : hour < 18 ? "夕方" : "夜";
-    const prompt = `展示ブースの陽気な呼び込みキャラ「レム」として、通りすがりの来場者を思わず振り向かせる「第一声」を${CALLOUT_POOL_TARGET}個作って。条件: それぞれ全く違う言い回し・各1文で15文字前後・タメ口でテンション高め・絵文字や記号や番号は付けない・1行に1つずつ出力・セリフ本文だけ。今は${tod}。`;
+    const prompt = `展示ブースの陽気な呼び込みキャラ「レム」として、通りすがりの来場者を思わず振り向かせる「第一声」を${CALLOUT_POOL_TARGET}個作って。レムはコンカフェ系の陽気な女の子キャラで、明るいタメ口・テンション高め。「〜だぜ」「〜だぞ」等の男っぽい荒い語尾は絶対に使わない（「〜だよ」「〜じゃん」「〜てよ」等、可愛らしい語尾にする）。条件: それぞれ全く違う言い回し・各1文で15文字前後・絵文字や記号や番号は付けない・1行に1つずつ出力・セリフ本文だけ。今は${tod}。`;
     try {
       const res = await fetch(GROQ_CHAT_URL, {
         method: "POST",

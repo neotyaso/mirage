@@ -80,10 +80,18 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
   near: 9000,
 };
 
+// 会話モードが始まった瞬間に必ず言う一言。会話開始後はレムは黙って聞く設計なので、
+// これが無いと来場者から「近づいたのに何も起きない」ように見えてしまう
+const CONVERSATION_START_LINES = [
+  "うんうん、何か話してよ！",
+  "よし、聞く準備できたよ！",
+  "さあさあ、何でも聞かせて！",
+];
+
 // 離脱時の別れの一言（実際に会話してた場合のみ発話。呼び込みだけで素通りされた時は言わない）
 const FAREWELL_LINES = [
   "またね〜！話せて楽しかった！",
-  "ありがとう〜！気をつけて帰ってね！",
+  "ありがとうね！気をつけて帰ってね！",
   "えー、もう行っちゃうの！？また来てよね！",
 ];
 
@@ -204,7 +212,16 @@ export default function App() {
 
   const activeSourceRef = useRef<{ stop: () => void; ctx: AudioContext } | null>(null);
 
+  // speak()はAivisSpeechへのfetch(audio_query→synthesis)完了を待ってから再生を始めるため、
+  // 呼び込みの直後に見た目コメントのspeak()が続けて呼ばれると、両方とも「再生中フラグが立つ前」の
+  // 状態で「前の音声を止める」チェックを通過してしまい、fetchが終わった順に両方が再生されて
+  // 音が重なるバグがあった。世代カウンタ(speakGenRef)で「一番最後に呼ばれたspeak()だけが実際に
+  // 再生される」ことを保証する（fetch中に新しいspeak()が来たら、古い方はfetch完了後に自分で気づいて
+  // 再生をやめる）
+  const speakGenRef = useRef(0);
   async function speak(text: string) {
+    const myGen = ++speakGenRef.current;
+
     // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
     if (activeSourceRef.current) {
       try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
@@ -231,6 +248,9 @@ export default function App() {
       if (!sRes.ok) throw new Error(`synthesis ${sRes.status}`);
 
       const arrayBuffer = await sRes.arrayBuffer();
+      // fetch待ちの間により新しいspeak()呼び出しがあった場合、自分は喋らずに引き下がる
+      if (myGen !== speakGenRef.current) return;
+
       const ctx = new AudioContext();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
@@ -238,6 +258,13 @@ export default function App() {
 
       const source = ctx.createBufferSource();
       source.buffer = await ctx.decodeAudioData(arrayBuffer);
+
+      // decodeAudioData中にも新しい呼び出しが来ている可能性があるため直前でも再確認
+      if (myGen !== speakGenRef.current) {
+        ctx.close().catch(() => {});
+        return;
+      }
+
       source.connect(analyser);
       analyser.connect(ctx.destination);
 
@@ -262,6 +289,7 @@ export default function App() {
       source.start();
       tick();
     } catch {
+      if (myGen !== speakGenRef.current) return;
       console.warn("AivisSpeech unavailable, using Web Speech fallback");
       speakFallback(text);
     }
@@ -421,6 +449,10 @@ export default function App() {
       if (p) lastPresentAtRef.current = performance.now();
       if (started && !paused) {
         if (z === "near" && convState === "idle") {
+          // 会話モードは開始しても来場者が話すまでレムは黙って聞くだけの設計だが、それだと
+          // 「近づいたのに何も起きない＝壊れてる？」と感じられてしまう。会話開始の瞬間は必ず
+          // 一言喋って「聞く態勢に入った」ことを分かりやすくする（呼び込みの通常クールダウンとは別枠）
+          speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
           startConversation();
         }
         if (convState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
