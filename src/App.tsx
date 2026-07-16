@@ -295,6 +295,25 @@ export default function App() {
     }
   }
 
+  // speakingRef.current が false になる（今の発話が終わる）まで待つ。呼び込みの直後に見た目コメントを
+  // 続けて喋らせたい時、その場の一発チェックだと「呼び込みがまだ再生中」なら丸ごと諦めてしまう
+  // （speak()側の世代カウンタが「後勝ち」なのは重なり防止のためであって、待たせる仕組みではないため）。
+  // ここで実際に呼び込みの再生完了を待ってから次の発話を投げることで、二段構えが確実に成立する。
+  // maxMsは万一喋り終わらない/検知できない場合の保険の上限
+  function waitUntilNotSpeaking(maxMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      function poll() {
+        if (!speakingRef.current || performance.now() - start > maxMs) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 150);
+      }
+      poll();
+    });
+  }
+
   function callOut(z: Exclude<DistanceZone, "absent">) {
     const isGroup = faceCountRef.current >= 2;
     // 1人相手なら、事前生成しておいたLLMの第一声を優先（毎回違う言い回しで「生きてる」感を出す）。
@@ -400,17 +419,18 @@ export default function App() {
               ) {
                 visionBusyRef.current = true;
                 lastVisionAtRef.current = now;
-                generateVisionComment(videoRef.current).then((comment) => {
+                generateVisionComment(videoRef.current).then(async (comment) => {
                   visionBusyRef.current = false;
                   if (!comment) return;
                   // 会話LLMが後の会話ターンで見た目に触れられるよう、喋る/喋らないに関わらず保持する
                   lastVisionCommentRef.current = comment;
-                  // まだ在席・レムが喋ってない・会話未開始なら、つかみとして声に出す（会話が始まっていれば
+                  // 呼び込みがまだ再生中なら、喋り終わるまで待ってから続ける（二段構えを確実に成立させる。
+                  // 待たずにその場でspeakingRef.currentを見るだけだと、呼び込みがまだ鳴っている間は
+                  // 毎回諦めて無言になってしまう）
+                  await waitUntilNotSpeaking(8000);
+                  // まだ在席・会話未開始なら、つかみとして声に出す（会話が始まっていれば
                   // 割り込まず、代わりに上のlastVisionCommentRef経由で会話の中に自然に混ぜる）
-                  if (
-                    !paused && presentRef.current && !speakingRef.current &&
-                    convStateRef.current === "idle"
-                  ) {
+                  if (!paused && presentRef.current && convStateRef.current === "idle") {
                     speak(comment);
                     lastCall.current = performance.now();
                   }
