@@ -8,7 +8,7 @@ import { WindowFrame } from "./components/WindowFrame";
 import { Ambience } from "./components/Ambience";
 import { playNoticeChime } from "./audio/accent";
 import { generateVisionComment } from "./vision/visionComment";
-import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
+import { useFaceDetection, getDistanceZone, ZONE_THRESHOLDS, adjustZoneThreshold, resetZoneThresholds } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
 import type { MutableRefObject } from "react";
@@ -176,15 +176,29 @@ export default function App() {
   const [faces, setFaces] = useState(0);
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [debugMode, setDebugMode] = useState(false); // 展示本番では隠す。"d"キーで表示切り替え
+  const [curFaceSize, setCurFaceSize] = useState(0); // HUD表示用の現在の顔幅（閾値合わせの目安）。
+  // このstateが150ms間隔で更新されることで、下のキー操作による閾値変更もHUDに追従表示される
 
-  // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え
+  // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え。
+  // 加えて、展示当日に会場で人が通る距離へ距離ゾーン閾値をその場で合わせるためのキー操作:
+  //   ← / → : far/mid境界（気づきに入り始める距離）を上下
+  //   ↑ / ↓ : mid/near境界（会話が始まる距離）を上下
+  //   0     : 閾値をデフォルトに戻す
+  // HUDに現在の顔幅(size)と両閾値を出しているので、それを見ながら詰められる
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "d") setDebugMode((v) => !v);
+      if (e.key === "d") { setDebugMode((v) => !v); return; }
+      if (!debugMode) return; // 閾値調整はデバッグHUD表示中のみ受け付ける（本番中の誤爆防止）
+      const STEP = 0.005;
+      if (e.key === "ArrowLeft")  { adjustZoneThreshold("far", -STEP); e.preventDefault(); }
+      else if (e.key === "ArrowRight") { adjustZoneThreshold("far", STEP); e.preventDefault(); }
+      else if (e.key === "ArrowDown")  { adjustZoneThreshold("mid", -STEP); e.preventDefault(); }
+      else if (e.key === "ArrowUp")    { adjustZoneThreshold("mid", STEP); e.preventDefault(); }
+      else if (e.key === "0") { resetZoneThresholds(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [debugMode]);
 
   // チャットログが増えたら自動で最下部へスクロール
   useEffect(() => {
@@ -364,6 +378,7 @@ export default function App() {
       setPresent(p);
       setFaces(faceCountRef.current);
       setZone(z);
+      setCurFaceSize(faceSizeRef.current);
 
       // 空間オーディオ: 来場者の画面上の左右位置に合わせて声のパンを更新（OffAxisCameraと同じ符号規則）
       const fc = faceCenterRef.current;
@@ -627,8 +642,13 @@ export default function App() {
 
       {debugMode && (
         <div style={hudStyle}>
-          cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
-          {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {!started ? "停止中" : paused ? "一時停止中" : "稼働中"}
+          <div>
+            cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
+            {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {!started ? "停止中" : paused ? "一時停止中" : "稼働中"}
+          </div>
+          <div style={{ marginTop: 2, opacity: 0.85 }}>
+            size: {curFaceSize.toFixed(3)} | far境界(←→): {ZONE_THRESHOLDS.far.toFixed(3)} | near境界(↑↓): {ZONE_THRESHOLDS.mid.toFixed(3)} | 0=リセット
+          </div>
         </div>
       )}
     </div>

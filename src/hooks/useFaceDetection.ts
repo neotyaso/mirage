@@ -19,14 +19,31 @@ export interface FaceExpression {
 }
 
 // 顔の正規化幅（0〜1）→距離の代理指標
-// 目安: <0.12 = 遠い, 0.12〜0.25 = 中距離, >0.25 = 近い
+// 目安: <far = 遠い, far〜mid = 中距離, >mid = 近い
 export type DistanceZone = "far" | "mid" | "near" | "absent";
+
+// 距離ゾーンの顔幅しきい値。展示会場では人がモニタからどのくらいの距離を通るか事前に読めないため、
+// 本番画面(dキーのデバッグHUD)からその場でキー調整できるようモジュール変数にしている。
+// getDistanceZoneが常にこの最新値を参照するので、書き換えれば即座に判定に反映される。
+export const ZONE_THRESHOLDS = { far: 0.12, mid: 0.25 };
+const ZONE_THRESHOLDS_DEFAULT = { far: 0.12, mid: 0.25 };
 
 export function getDistanceZone(faceSize: number): DistanceZone {
   if (faceSize <= 0) return "absent";
-  if (faceSize < 0.12) return "far";
-  if (faceSize < 0.25) return "mid";
+  if (faceSize < ZONE_THRESHOLDS.far) return "far";
+  if (faceSize < ZONE_THRESHOLDS.mid) return "mid";
   return "near";
+}
+
+// 本番HUDからの閾値調整。far/midの境界を動かす（step単位）。midがfarを下回らないようにクランプする
+export function adjustZoneThreshold(which: "far" | "mid", delta: number) {
+  const next = ZONE_THRESHOLDS[which] + delta;
+  if (which === "far") ZONE_THRESHOLDS.far = Math.max(0.02, Math.min(next, ZONE_THRESHOLDS.mid - 0.01));
+  else ZONE_THRESHOLDS.mid = Math.max(ZONE_THRESHOLDS.far + 0.01, Math.min(next, 0.6));
+}
+export function resetZoneThresholds() {
+  ZONE_THRESHOLDS.far = ZONE_THRESHOLDS_DEFAULT.far;
+  ZONE_THRESHOLDS.mid = ZONE_THRESHOLDS_DEFAULT.mid;
 }
 
 export function useFaceDetection(enabled: boolean = true) {
