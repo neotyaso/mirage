@@ -30,6 +30,12 @@ const viewFragment = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
   uniform float uTime;
+  // 時間帯で変わる空・太陽の色（JS側で実時刻から計算して渡す）
+  uniform vec3 uSkyHorizon;
+  uniform vec3 uSkyTop;
+  uniform vec3 uSunColor;
+  uniform vec2 uSunPos;
+  uniform float uSunStrength;
 
   float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
   float noise(vec2 p){
@@ -49,9 +55,9 @@ const viewFragment = /* glsl */ `
     // ゆるやかに波打つ木立のライン
     float horizon = 0.42 + (fbm(vec2(uv.x * 3.0, 1.0)) - 0.5) * 0.06;
 
-    // 空（地平線より上）: 上=淡い青 → 地平線=暖色クリーム
+    // 空（地平線より上）: 上=淡い青 → 地平線=暖色クリーム（時間帯で色が変わる）
     float ts = clamp((uv.y - horizon) / (1.0 - horizon), 0.0, 1.0);
-    vec3 sky = mix(vec3(0.98, 0.95, 0.87), vec3(0.55, 0.72, 0.88), ts);
+    vec3 sky = mix(uSkyHorizon, uSkyTop, ts);
     // うっすら雲（ゆっくり流れる）
     float cl = smoothstep(0.55, 0.9, fbm(uv * vec2(4.0, 3.0) + vec2(uTime * 0.012, 0.0))) * ts;
     sky = mix(sky, vec3(1.0), cl * 0.28);
@@ -66,9 +72,9 @@ const viewFragment = /* glsl */ `
     float m = smoothstep(horizon - 0.012, horizon + 0.012, uv.y); // 0=木立, 1=空
     vec3 col = mix(fol, sky, m);
 
-    // 太陽のやわらかいグロー（暖色）
-    float d = distance(uv, vec2(0.30, 0.80));
-    col += exp(-d * d / 0.05) * 0.20 * vec3(1.0, 0.96, 0.82);
+    // 太陽のやわらかいグロー（時間帯で位置・色・強さが変わる）
+    float d = distance(uv, uSunPos);
+    col += exp(-d * d / 0.05) * uSunStrength * uSunColor;
 
     gl_FragColor = vec4(col, 1.0);
   }
@@ -76,21 +82,85 @@ const viewFragment = /* glsl */ `
 
 const FRAME_COLOR = "#ece5d7";
 
+// 時間帯ごとの空・太陽のパレット（実時刻に合わせて窓の外を朝→昼→夕→宵で変える＝「窓の外＝本物」の一貫性）。
+// 常に見栄えする範囲に留め、真っ暗な夜にはしない（明るいナチュラルな室内と喧嘩するため）。
+type SkyKey = {
+  h: number;
+  horizon: [number, number, number];
+  top: [number, number, number];
+  sun: [number, number];
+  sunCol: [number, number, number];
+  sunStr: number;
+};
+const SKY_KEYS: SkyKey[] = [
+  { h: 7,  horizon: [0.96, 0.90, 0.82], top: [0.62, 0.74, 0.86], sun: [0.26, 0.72], sunCol: [1.0, 0.93, 0.80], sunStr: 0.16 }, // 朝: やわらかい
+  { h: 12, horizon: [0.98, 0.95, 0.87], top: [0.55, 0.72, 0.88], sun: [0.30, 0.80], sunCol: [1.0, 0.96, 0.82], sunStr: 0.20 }, // 昼: 明るい（従来）
+  { h: 17, horizon: [1.00, 0.86, 0.66], top: [0.50, 0.62, 0.82], sun: [0.68, 0.58], sunCol: [1.0, 0.82, 0.60], sunStr: 0.28 }, // 夕: 金色
+  { h: 20, horizon: [0.86, 0.72, 0.62], top: [0.34, 0.42, 0.60], sun: [0.72, 0.42], sunCol: [1.0, 0.74, 0.55], sunStr: 0.15 }, // 宵: 落ち着いた暖色
+];
+
+function lerpArr<T extends number[]>(a: T, b: T, t: number): T {
+  return a.map((v, i) => v + (b[i] - v) * t) as T;
+}
+
+// 連続した時刻(hour + minute/60)から空パレットを補間して返す。範囲外は端に張り付ける
+function skyPaletteAt(hour: number): SkyKey {
+  if (hour <= SKY_KEYS[0].h) return SKY_KEYS[0];
+  if (hour >= SKY_KEYS[SKY_KEYS.length - 1].h) return SKY_KEYS[SKY_KEYS.length - 1];
+  let i = 0;
+  while (i < SKY_KEYS.length - 1 && hour > SKY_KEYS[i + 1].h) i++;
+  const a = SKY_KEYS[i], b = SKY_KEYS[i + 1];
+  const t = (hour - a.h) / (b.h - a.h);
+  return {
+    h: hour,
+    horizon: lerpArr(a.horizon, b.horizon, t),
+    top: lerpArr(a.top, b.top, t),
+    sun: lerpArr(a.sun, b.sun, t),
+    sunCol: lerpArr(a.sunCol, b.sunCol, t),
+    sunStr: a.sunStr + (b.sunStr - a.sunStr) * t,
+  };
+}
+
+function currentHour(): number {
+  const d = new Date();
+  return d.getHours() + d.getMinutes() / 60;
+}
+
 export function RoomWindow() {
   const matRef = useRef<THREE.ShaderMaterial>(null);
-  const viewMat = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: viewVertex,
-        fragmentShader: viewFragment,
-        uniforms: { uTime: { value: 0 } },
-        toneMapped: false, // 光の影響を受けず、昼の窓として明るく出す
-      }),
-    []
-  );
+  const lastPaletteAt = useRef(0);
+  const viewMat = useMemo(() => {
+    const p = skyPaletteAt(currentHour());
+    return new THREE.ShaderMaterial({
+      vertexShader: viewVertex,
+      fragmentShader: viewFragment,
+      uniforms: {
+        uTime: { value: 0 },
+        uSkyHorizon: { value: new THREE.Vector3(...p.horizon) },
+        uSkyTop: { value: new THREE.Vector3(...p.top) },
+        uSunColor: { value: new THREE.Vector3(...p.sunCol) },
+        uSunPos: { value: new THREE.Vector2(...p.sun) },
+        uSunStrength: { value: p.sunStr },
+      },
+      toneMapped: false, // 光の影響を受けず、昼の窓として明るく出す
+    });
+  }, []);
 
-  useFrame((_, delta) => {
-    if (matRef.current) matRef.current.uniforms.uTime.value += delta;
+  useFrame((state, delta) => {
+    const m = matRef.current;
+    if (!m) return;
+    m.uniforms.uTime.value += delta;
+    // 時間帯パレットは数秒おきに実時刻から更新（展示は長時間動くので朝→夕の推移を反映）
+    const t = state.clock.elapsedTime;
+    if (t - lastPaletteAt.current > 5) {
+      lastPaletteAt.current = t;
+      const p = skyPaletteAt(currentHour());
+      (m.uniforms.uSkyHorizon.value as THREE.Vector3).set(...p.horizon);
+      (m.uniforms.uSkyTop.value as THREE.Vector3).set(...p.top);
+      (m.uniforms.uSunColor.value as THREE.Vector3).set(...p.sunCol);
+      (m.uniforms.uSunPos.value as THREE.Vector2).set(...p.sun);
+      m.uniforms.uSunStrength.value = p.sunStr;
+    }
   });
 
   const b = 0.07; // 額縁の幅

@@ -1,13 +1,14 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Grid } from "@react-three/drei";
+import { OrbitControls, Grid, ContactShadows } from "@react-three/drei";
 import { Avatar, DEFAULT_BECKON_POSE } from "../components/Avatar";
 import type { BeckonPose } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
 import { useConversation } from "../hooks/useConversation";
+import { generateVisionComment } from "../vision/visionComment";
 
 // アニメーション・会話を手動/実カメラ/実会話で試せる試験用ページ。
 // 本番App.tsxと同じrefインターフェースをAvatarに渡す。
@@ -60,6 +61,20 @@ export function Playground() {
   const [cameraOn, setCameraOn] = useState(false);
   const cam = useFaceDetection(cameraOn);
   const [camFaces, setCamFaces] = useState(0);
+
+  // 視覚コメント（「私、見えてるよ」）の手動テスト。カメラONで自分を映して押すと、
+  // Groq visionが返した一言を表示する（本番はApp側で新規来場時に自動発火）
+  const [visionText, setVisionText] = useState<string>("");
+  const [visionLoading, setVisionLoading] = useState(false);
+  async function testVision() {
+    setVisionLoading(true);
+    setVisionText("");
+    const t0 = performance.now();
+    const comment = await generateVisionComment(cam.videoRef.current);
+    const ms = Math.round(performance.now() - t0);
+    setVisionText(comment ? `「${comment}」 (${ms}ms)` : `SKIP/失敗 (${ms}ms)`);
+    setVisionLoading(false);
+  }
 
   // カメラONの間、実検出値をAvatar出力refへ同期する。OFFの間は手動操作がそのままAvatarに効く
   useEffect(() => {
@@ -147,6 +162,7 @@ export function Playground() {
             conversing={conv.state !== "idle" || fakeConversing}
             beckonPoseRef={beckonPoseRef}
           />
+          <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
       </Canvas>
 
@@ -182,6 +198,15 @@ export function Playground() {
             </span>
           )}
         </div>
+        {cameraOn && (
+          <div style={rowStyle}>
+            <span style={labelStyle}>視覚コメント（「私、見えてるよ」テスト）</span>
+            <button onClick={testVision} disabled={visionLoading} style={{ ...btnStyle, background: visionLoading ? "#6b7280" : "#374151" }}>
+              {visionLoading ? "生成中…" : "📷 見た目に一言"}
+            </button>
+            {visionText && <span style={{ fontSize: 12, opacity: 0.85 }}>{visionText}</span>}
+          </div>
+        )}
 
         <div style={rowStyle}>
           <span style={labelStyle}>会話（実STT/LLM/TTS）</span>

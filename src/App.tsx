@@ -1,14 +1,16 @@
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { ContactShadows } from "@react-three/drei";
 import { Avatar } from "./components/Avatar";
 import { Room } from "./components/Room";
 import { WindowFrame } from "./components/WindowFrame";
 import { Ambience } from "./components/Ambience";
+import { playNoticeChime } from "./audio/accent";
+import { generateVisionComment } from "./vision/visionComment";
 import { useFaceDetection, getDistanceZone } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
-import type { ConvState } from "./hooks/useConversation";
 import type { MutableRefObject } from "react";
 
 // Off-axis カメラ: 来場者の顔位置でカメラが動き「3Dの窓」効果を生む
@@ -127,10 +129,38 @@ export default function App() {
   const speakingRef = useRef(false);
   const volumeRef = useRef(0);
   const panRef = useRef(0); // 空間オーディオ: -1(左)〜1(右)。来場者の画面上の左右位置に追従
-  const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef);
-  const logEndRef = useRef<HTMLDivElement>(null);
+
+  // 顔検知は会話コンテキストより先に用意する（getConversationContextが下のrefを読むため）
   const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
+
+  // 直近の視覚コメント（見た目の一言）。会話LLMに「見た目」を文脈として渡し、会話の中で
+  // 自然に触れさせるために保持する。来場者が離脱したらクリアして次の人に持ち越さない
+  const lastVisionCommentRef = useRef("");
+
+  // 会話の各ターン直前に呼ばれ、いまの知覚を短い文にする（人数・笑顔・見た目）。
+  // レムが「二人で来たんだね」「お、笑ってくれた」等、現実を踏まえた返しをできるようにする。
+  // refだけ読むので依存は空でよい
+  const getConversationContext = useCallback(() => {
+    const parts: string[] = [];
+    const n = faceCountRef.current;
+    if (n >= 2) parts.push(`来場者は${n}人で一緒に来ている`);
+    if ((expressionRef.current?.smile ?? 0) >= 0.3) parts.push("相手は今えがお");
+    const vc = lastVisionCommentRef.current;
+    if (vc) parts.push(`あなたは相手の見た目を見て既に「${vc}」と声をかけた。同じ言葉は繰り返さず、必要なら会話の流れの中で自然にその見た目の話題に触れてよい`);
+    return parts.join("。");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef, getCallout, refillCallouts } = useConversation(speakingRef, volumeRef, panRef, getConversationContext);
+
+  // 行動タグ(頷く/首かしげる/手招き)をApp側からも発火する共通ヘルパー。
+  // idは負のタイムスタンプにして、useConversation内部のLLMタグ検出が使う正の連番と衝突させない
+  // （Avatarは値の変化=idの差でしか新規トリガーを判定しないので、正負が混ざっても問題ない）
+  function fireAction(tag: "nod" | "tilt" | "beckon") {
+    actionRef.current = { tag, id: -Date.now() };
+  }
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   const [started, setStarted] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -239,6 +269,12 @@ export default function App() {
 
   function callOut(z: Exclude<DistanceZone, "absent">) {
     const isGroup = faceCountRef.current >= 2;
+    // 1人相手なら、事前生成しておいたLLMの第一声を優先（毎回違う言い回しで「生きてる」感を出す）。
+    // プールが空/枯渇していれば固定文にフォールバック。複数人相手は専用の固定文を使う
+    if (!isGroup) {
+      const llm = getCallout();
+      if (llm) { speak(llm); return; }
+    }
     const pool = isGroup ? GROUP_LINES[z] : LINES[z];
     speak(pool[Math.floor(Math.random() * pool.length)]);
   }
@@ -261,6 +297,13 @@ export default function App() {
   const prevFaceSizeRef = useRef(0);
   const prevFaceSizeAtRef = useRef(0);
   const lastStartleRef = useRef(0);
+  // 視覚コメント（「私、見えてるよ」）: 生成は非同期(約1〜2秒)。結果が返る頃には
+  // interval側のconvState(クロージャ値)が古いので、最新をrefで参照して差し込み可否を判定する
+  const convStateRef = useRef(convState);
+  useEffect(() => { convStateRef.current = convState; }, [convState]);
+  const visionBusyRef = useRef(false);
+  const lastVisionAtRef = useRef(0);
+  const VISION_COOLDOWN_MS = 25000; // 同じ人・立て続けの連発を防ぐ
   // 実際に会話ログがあるか（離脱時の別れの一言を言うか判定用）。
   // setInterval側のクロージャがconvState変化時にしか作り直されず、logの更新を都度拾えないためrefで同期する
   const hasLogRef = useRef(false);
@@ -312,8 +355,39 @@ export default function App() {
           if (isNewArrival) lookAwayStreakRef.current = 0; // 新規来場者には食い下がり演出をリセット
           if (isNewArrival || now - lastCall.current > cooldown) {
             if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
+              // 新規来場の瞬間だけ、気づきの軽い効果音アクセントを声の直前に鳴らす
+              // （来場者の左右位置=panRefに寄せて空間の実在感を出す）
+              if (isNewArrival) playNoticeChime(0.05, panRef.current);
               callOut(z);
               lastCall.current = now;
+
+              // 「私、見えてるよ」演出: 新規来場かつ顔がある程度大きく写る(mid/near)時に、
+              // 裏でカメラ1フレームをvision-LLMに投げて見た目の一言を生成する。生成は約1〜2秒
+              // かかるので、まず上の呼び込み(即時)で気を引き、少し遅れて具体コメントが刺さる二段構え。
+              // 結果が返った時点でまだ在席中・レムが喋ってない・会話が始まってなければ差し込む
+              if (
+                isNewArrival && (z === "mid" || z === "near") &&
+                videoRef.current && !visionBusyRef.current &&
+                now - lastVisionAtRef.current > VISION_COOLDOWN_MS
+              ) {
+                visionBusyRef.current = true;
+                lastVisionAtRef.current = now;
+                generateVisionComment(videoRef.current).then((comment) => {
+                  visionBusyRef.current = false;
+                  if (!comment) return;
+                  // 会話LLMが後の会話ターンで見た目に触れられるよう、喋る/喋らないに関わらず保持する
+                  lastVisionCommentRef.current = comment;
+                  // まだ在席・レムが喋ってない・会話未開始なら、つかみとして声に出す（会話が始まっていれば
+                  // 割り込まず、代わりに上のlastVisionCommentRef経由で会話の中に自然に混ぜる）
+                  if (
+                    !paused && presentRef.current && !speakingRef.current &&
+                    convStateRef.current === "idle"
+                  ) {
+                    speak(comment);
+                    lastCall.current = performance.now();
+                  }
+                });
+              }
             }
           }
         }
@@ -354,9 +428,13 @@ export default function App() {
           // 呼び込みだけで素通りされた時にまで「またね」と言うと不自然なので
           if (hasLogRef.current) {
             speak(FAREWELL_LINES[Math.floor(Math.random() * FAREWELL_LINES.length)]);
+            // 名残惜しそうに手を振って見送る。stopConversation後はconversingが切れるので、
+            // beckon再生中(約2.5秒)はAvatarが正面を向いて固まる＝手を振りながらの見送りになる
+            fireAction("beckon");
           }
           stopConversation();
           resetHistory();
+          lastVisionCommentRef.current = ""; // 見た目メモは次の来場者に持ち越さない
           silentResumeRef.current = true;
         }
       }
@@ -367,12 +445,16 @@ export default function App() {
 
   function handleStart() {
     setStarted(true);
+    refillCallouts(); // 呼び込みLLM文プールを裏で温めておく（最初の何回かは固定文、以降LLM文に）
     callOut("mid"); // 音声解放を兼ねた初回発話
     lastCall.current = performance.now();
     // 展示用: ブラウザのタブ・ブックマーク・URLバーを隠して「窓の中の別世界」への没入感を上げる。
     // 全画面APIはユーザー操作(このボタン押下)を起点にしないと拒否されるため、ここで呼ぶ
     document.documentElement.requestFullscreen?.().catch(() => {});
   }
+
+  // 会話中の相槌は「相手が話し始めたら頷く」形で useConversation の VAD 側から発火する。
+  // 首をかしげる動きは相手に挑発的に映るため、会話中には使わない（以前の考え中→首かしげは撤去）。
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
@@ -390,6 +472,8 @@ export default function App() {
         <Suspense fallback={null}>
           <Room />
           <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
+          {/* 足元の接地影。「本当にそこに立っている」感を出す（暖色寄りのやわらかい影） */}
+          <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
       </Canvas>
 
