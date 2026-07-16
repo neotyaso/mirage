@@ -379,6 +379,7 @@ export default function App() {
           const speed = (curSize - prevFaceSizeRef.current) / dt;
           if (
             started && !paused && !speakingRef.current &&
+            convState === "idle" && // 会話中(聞いてる/考え中含む)は驚きセリフで割り込まない
             curSize > STARTLE_MIN_SIZE &&
             speed > STARTLE_SPEED_THRESHOLD &&
             nowMs - lastStartleRef.current > STARTLE_COOLDOWN_MS
