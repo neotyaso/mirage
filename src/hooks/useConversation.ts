@@ -117,9 +117,10 @@ const SENTENCE_END_RE = /[。！？\n]/g;
 const MIN_CHUNK_CHARS = 6; // これより短い断片は単独でTTSに送らず次の文とマージする（「！」単独送信で不自然にならないように）
 
 // 行動タグ: LLM応答の先頭に付けさせ、読み上げ前に取り除いてキャラの動きに変換する（最小版）
-// "stretch"/"beckon"はLLMには使わせず手動・自動トリガー専用のため、型には含めるが
-// ACTION_TAGS(LLM検出対象)には含めない（beckonは来場者検知時にAvatar側が自動発火する）
-export type ActionTag = "nod" | "tilt" | "surprise" | "stretch" | "beckon";
+// "stretch"/"beckon"/"glance"はLLMには使わせず手動・自動トリガー専用のため、型には含めるが
+// ACTION_TAGS(LLM検出対象)には含めない（beckonは来場者検知時、glanceはfar距離検知時にAvatar側が
+// 自動発火する。Playgroundの手動デモ発火にも使う）
+export type ActionTag = "nod" | "tilt" | "surprise" | "stretch" | "beckon" | "glance";
 // LLMに使わせる行動タグ。tiltは会話相手に挑発的に映るので外し、相槌(nod)と驚き(surprise)のみ。
 // （tiltは型には残す＝誰もいない時の徘徊中の生活感演出でだけ使う）
 const ACTION_TAGS: ActionTag[] = ["nod", "surprise"];
