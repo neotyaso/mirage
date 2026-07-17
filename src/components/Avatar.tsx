@@ -173,9 +173,12 @@ export interface GlanceParams {
   intervalMaxS: number; // 同（最長）。ランダムにして機械的に見せない
   neckMax: number;      // チラ見中の首の最大ヨー(ラジアン)。通常追従より深く回す
   lerp: number;         // チラ見の首の振り向き速さ（通常より素早く「ハッ」とさせる）
+  // 徘徊が「歩いている→止まった」瞬間は、立ち止まってふと振り返る動きとして特に自然に見える
+  // タイミングなので、この確率でランダムタイマーを待たずにチラ見を前倒しで誘発する
+  pauseChance: number;
 }
 export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
-  durationS: 0.8, intervalMinS: 3.5, intervalMaxS: 8.0, neckMax: 0.75, lerp: 0.22,
+  durationS: 0.8, intervalMinS: 3.5, intervalMaxS: 8.0, neckMax: 0.75, lerp: 0.22, pauseChance: 0.6,
 };
 
 /**
@@ -575,9 +578,18 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         if (dist < WANDER_ARRIVE_DIST) {
           // 歩いていた状態から止まった瞬間だけ、低確率で伸び/頷く/首かしげるのどれかを挟む
           // (「ただ突っ立ってるだけ」を防ぐ生活感演出。waveは対象外)
-          if (prevWanderWalking.current && Math.random() < IDLE_GESTURE_CHANCE) {
-            const pick = IDLE_GESTURE_TAGS[Math.floor(Math.random() * IDLE_GESTURE_TAGS.length)];
-            triggerAction(pick);
+          if (prevWanderWalking.current) {
+            if (Math.random() < IDLE_GESTURE_CHANCE) {
+              const pick = IDLE_GESTURE_TAGS[Math.floor(Math.random() * IDLE_GESTURE_TAGS.length)];
+              triggerAction(pick);
+            }
+            // 立ち止まって「ふと振り返る」のはチラ見が最も自然に見えるタイミングなので、
+            // 止まった瞬間だけランダムタイマー(nextGlanceAt)を待たずに前倒しで誘発する。
+            // 直接glanceUntilを書き換えず「次フレームで即発火する」よう仕込むだけなので、
+            // 通常のチラ見発火ロジック(このフレームの少し上)と経路が分かれず一本化される
+            if (zone === "far" && !glancing && Math.random() < glanceParams.pauseChance) {
+              nextGlanceAt.current = t - 1;
+            }
           }
           isWalking = false;
           if (t > wanderPauseUntil.current) {

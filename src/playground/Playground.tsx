@@ -2,8 +2,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid, ContactShadows } from "@react-three/drei";
-import { Avatar, DEFAULT_BECKON_POSE } from "../components/Avatar";
-import type { BeckonPose } from "../components/Avatar";
+import { Avatar, DEFAULT_BECKON_POSE, DEFAULT_GLANCE_PARAMS } from "../components/Avatar";
+import type { BeckonPose, GlanceParams } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
@@ -57,6 +57,15 @@ export function Playground() {
     setBeckonPose(next);
   }
 
+  // チラ見パラメータのライブ調整（手招みポーズと同じ方式）
+  const [glanceParams, setGlanceParams] = useState<GlanceParams>({ ...DEFAULT_GLANCE_PARAMS });
+  const glanceParamsRef = useRef<GlanceParams>({ ...DEFAULT_GLANCE_PARAMS });
+  function setGlanceField(k: keyof GlanceParams, v: number) {
+    const next = { ...glanceParamsRef.current, [k]: v };
+    glanceParamsRef.current = next;
+    setGlanceParams(next);
+  }
+
   // ---- カメラ(実顔検出) ----
   const [cameraOn, setCameraOn] = useState(false);
   const cam = useFaceDetection(cameraOn);
@@ -108,8 +117,8 @@ export function Playground() {
 
   // 行動タグ: LLM([nod]/[tilt]タグ由来)と手動ボタンで同じrefを共有する。
   // 手動分は負のidにして、hook内部の連番(正)と衝突しないようにする
-  // ("stretch"はLLMには使わせておらず手動トリガー専用)
-  function triggerAction(tag: "nod" | "tilt" | "stretch" | "beckon") {
+  // ("stretch"/"glance"はLLMには使わせておらず手動トリガー専用)
+  function triggerAction(tag: "nod" | "tilt" | "stretch" | "beckon" | "glance") {
     conv.actionRef.current = { tag, id: -Date.now() };
   }
 
@@ -161,6 +170,7 @@ export function Playground() {
             actionRef={conv.actionRef}
             conversing={conv.state !== "idle" || fakeConversing}
             beckonPoseRef={beckonPoseRef}
+            glanceParamsRef={glanceParamsRef}
           />
           <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
@@ -244,6 +254,39 @@ export function Playground() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>チラ見（far距離での一瞬の振り向き演出）</span>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>
+            本番では「遠い」ゾーンにいる間、徘徊を続けたまま不規則な間隔(既定3.5〜8秒)で
+            一瞬だけ首を大きく来場者へ向けてすぐ戻す。ボタンは待たずに今すぐ1回分を再生する（ゾーン不問）
+          </span>
+          <button onClick={() => triggerAction("glance")} style={{ ...btnStyle, background: "#374151" }}>
+            👀 チラ見を今すぐ見る
+          </button>
+          {([
+            ["durationS", "長さ(秒)", 0.2, 2],
+            ["neckMax", "首の最大角(rad)", 0.1, 1.2],
+            ["lerp", "振り向く速さ", 0.05, 0.6],
+            ["intervalMinS", "間隔・最短(秒)", 0.5, 10],
+            ["intervalMaxS", "間隔・最長(秒)", 0.5, 15],
+            ["pauseChance", "徘徊が止まった瞬間に誘発する確率", 0, 1],
+          ] as [keyof GlanceParams, string, number, number][]).map(([k, label, min, max]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ ...labelStyle, minWidth: 148, fontSize: 11 }}>{label} {glanceParams[k].toFixed(2)}</span>
+              <input
+                type="range" min={min} max={max} step={0.02} value={glanceParams[k]}
+                onChange={(e) => setGlanceField(k, Number(e.target.value))} style={{ flex: 1 }}
+              />
+            </div>
+          ))}
+          <button
+            onClick={() => navigator.clipboard.writeText(JSON.stringify(glanceParams))}
+            style={{ ...btnStyle, background: "#374151", marginTop: 4 }}
+          >
+            値をコピー
+          </button>
         </div>
 
         <div style={rowStyle}>
