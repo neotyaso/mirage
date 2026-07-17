@@ -80,6 +80,12 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
   near: 9000,
 };
 
+// 初回の「気づいた」呼び込み(チャイム+呼び込み声)は、far到達で即座には鳴らさない。
+// Avatar.tsx側の「チラ見」演出(farではまだ気づいてないフリを続ける)と足並みを揃えるため、
+// mid/nearまで寄ってきたら即座に、farのまま粘る場合だけこの時間だけ待ってから鳴らす
+// （放置しすぎると遠くの通行人を完全に無視することになるための保険）
+const GREET_FALLBACK_MS = 4000;
+
 // 会話モードが始まった瞬間に必ず言う一言。会話開始後はレムは黙って聞く設計なので、
 // これが無いと来場者から「近づいたのに何も起きない」ように見えてしまう
 const CONVERSATION_START_LINES = [
@@ -350,6 +356,9 @@ export default function App() {
   // 「新規来場者」扱いの呼び込みセリフを鳴らさず静かに会話を再開する（2人目が現れて一瞬顔が隠れた時などに
   // 「ねえねえ話していかない？」が会話に割り込む不自然さを防ぐ）
   const silentResumeRef = useRef(false);
+  // 今回の来場者に対して「気づいた」呼び込み(チャイム+声)をもう鳴らしたか。新規来場でリセットされる
+  const hasGreetedRef = useRef(false);
+  const firstSeenAtRef = useRef(0); // 今回の来場者を検知し始めた時刻（GREET_FALLBACK_MSの起点）
   // 視線を外すと構う: そっぽを向いた継続時間とクールダウンの管理
   const lookAwaySinceRef = useRef(0);
   const lastLookAwayCallRef = useRef(0);
@@ -409,27 +418,39 @@ export default function App() {
 
       if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
         const now = performance.now();
-        const cooldown = COOLDOWN[z];
         if (silentResumeRef.current) {
           silentResumeRef.current = false;
         } else {
-          // 不在→在 の瞬間、またはクールダウン経過後に再呼び込み
+          // 不在→在 の瞬間、新規来場者としてリセット
           const isNewArrival = !wasPresent.current;
-          if (isNewArrival) lookAwayStreakRef.current = 0; // 新規来場者には食い下がり演出をリセット
-          if (isNewArrival || now - lastCall.current > cooldown) {
-            if (now - lastCall.current > 1500) { // 連打防止（最低1.5秒）
-              // 新規来場の瞬間だけ、気づきの軽い効果音アクセントを声の直前に鳴らす
-              // （来場者の左右位置=panRefに寄せて空間の実在感を出す）
-              if (isNewArrival) playNoticeChime(0.05, panRef.current);
+          if (isNewArrival) {
+            lookAwayStreakRef.current = 0; // 食い下がり演出のエスカレーションをリセット
+            hasGreetedRef.current = false;
+            firstSeenAtRef.current = now;
+          }
+
+          if (!hasGreetedRef.current) {
+            // まだ「気づいた」呼び込みをしていない来場者。mid/nearまで寄ってきたら即座に、
+            // farのまま粘る場合はGREET_FALLBACK_MSだけ待ってから、初回の気づき(チャイム+呼び込み)を鳴らす。
+            // far到達で即声にしないのは、Avatar側の「チラ見」演出(farではまだ気づいてないフリを続ける)
+            // と足並みを揃えるため——即声にすると「見てないフリ」の説得力が消えてしまう
+            const reachedInteractive = z === "mid" || z === "near";
+            if (
+              (reachedInteractive || now - firstSeenAtRef.current > GREET_FALLBACK_MS) &&
+              now - lastCall.current > 1500 // 連打防止（最低1.5秒）
+            ) {
+              // 気づきの軽い効果音アクセントを声の直前に鳴らす（来場者の左右位置=panRefに寄せる）
+              playNoticeChime(0.05, panRef.current);
               callOut(z);
               lastCall.current = now;
+              hasGreetedRef.current = true;
 
-              // 「私、見えてるよ」演出: 新規来場かつ顔がある程度大きく写る(mid/near)時に、
+              // 「私、見えてるよ」演出: 気づいた瞬間にmid/nearまで顔が大きく写っていれば、
               // 裏でカメラ1フレームをvision-LLMに投げて見た目の一言を生成する。生成は約1〜2秒
               // かかるので、まず上の呼び込み(即時)で気を引き、少し遅れて具体コメントが刺さる二段構え。
               // 結果が返った時点でまだ在席中・レムが喋ってない・会話が始まってなければ差し込む
               if (
-                isNewArrival && (z === "mid" || z === "near") &&
+                reachedInteractive &&
                 videoRef.current && !visionBusyRef.current &&
                 now - lastVisionAtRef.current > VISION_COOLDOWN_MS
               ) {
@@ -453,6 +474,10 @@ export default function App() {
                 });
               }
             }
+          } else if (now - lastCall.current > COOLDOWN[z] && now - lastCall.current > 1500) {
+            // 気づき済み。以降はゾーン別クールダウンで呼び込みを繰り返す（従来通り）
+            callOut(z);
+            lastCall.current = now;
           }
         }
       }

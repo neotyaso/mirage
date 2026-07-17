@@ -157,6 +157,18 @@ const NECK_FOLLOW_FRAC = 0.55;      // 首がこなす向きの割合
 const NECK_FOLLOW_MAX = 0.42;       // 首の最大ヨー(ラジアン、約24°)。振り向きすぎ防止
 const NECK_FOLLOW_LERP = 0.09;      // 首追従の滑らかさ
 
+// 「チラ見」演出: far(検知はできるがまだ気づき演出には入らない距離)にいる間、
+// 通常時の首追従(NECK_FOLLOW_MAX/LERPで常時ゆるく効いている)だけだと角度が浅く動きも
+// 遅いため、遠目には「見られてる」と気づきにくい。そこで不規則な間隔で一瞬だけ首を
+// 大きく・素早く来場者へ向けてすぐ戻す「ハッ→視線を外す」を挟み、歩き（徘徊）は止めずに
+// 続けたまま「今、目が合った？」という体感を作る。気づき演出(noticing/beckoning)には
+// 昇格させない＝まだ気づいてないフリを保ったまま、視線だけ一瞬お漏らしする作戦
+const GLANCE_DURATION_S = 0.8;      // 一回のチラ見の長さ
+const GLANCE_INTERVAL_MIN_S = 3.5;  // 次のチラ見までの間隔（最短）
+const GLANCE_INTERVAL_MAX_S = 8.0;  // 同（最長）。ランダムにして機械的に見せない
+const GLANCE_NECK_MAX = 0.75;       // チラ見中の首の最大ヨー(約43°)。通常追従より深く回す
+const GLANCE_LERP = 0.22;           // チラ見の首の振り向き速さ（通常より素早く「ハッ」とさせる）
+
 /**
  * VRMアバターを全身表示する。
  * - まばたき（ランダム間隔）
@@ -224,6 +236,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const noticeStart = useRef(0);        // 演出開始時刻（surprised→happyの切替判定用）
   const absentSince = useRef(0);        // 「不在」が始まった時刻（0=在席中）
   const noticeCooldownUntil = useRef(0);// 連続発火防止
+  // 「チラ見」演出の状態管理（far距離での一瞬の首振り向き）
+  const glanceUntil = useRef(0);        // この時刻までチラ見中
+  const nextGlanceAt = useRef(0);       // 次にチラ見していい最短時刻
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -440,9 +455,14 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // 現在の距離ゾーン（気づき演出の検知・接近演出の両方で使う）
     const zoneNow = getDistanceZone(faceSizeRef?.current ?? 0);
 
-    // 「気づき」演出のトリガー: 一定時間の不在のあと来場者を検知した“その瞬間”だけ発火する。
-    // （顔検出が一瞬途切れて戻るたびに再発火しないよう、NOTICE_ABSENT_MIN_S以上の不在を要求）
-    if (zoneNow === "absent") {
+    // 「気づき」演出のトリガー: farはまだ「気づいてないフリ(チラ見)」の段階とし、
+    // mid/nearまで寄ってきた“その瞬間”に初めて発火する。遠目の人にいきなり手招みして
+    // 押し売り感を出すのを避け、「近づいてくれたら初めてハッと気づく」自然な二段にする。
+    // （顔検出が一瞬途切れて戻るたびの再発火は、NOTICE_ABSENT_MIN_S以上の“気づいてない時間”で防ぐ）
+    const reachedInteractive = zoneNow === "mid" || zoneNow === "near";
+    if (!reachedInteractive) {
+      // absent(誰もいない)も far(遠くにいる)も「まだ気づいていない」扱いで、気づくまでの
+      // 経過時間を刻み続ける（この蓄積がNOTICE_ABSENT_MIN_Sを超えていればmid到達で発火する）
       if (absentSince.current === 0) absentSince.current = t;
     } else {
       if (
@@ -464,6 +484,17 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     const beckoning = beckonT.current < BECKON_DURATION_S;
     const beckonTime = beckonT.current;
     if (beckoning) beckonT.current += delta;
+
+    // 「チラ見」のトリガー: farで検知できている間だけ、不規則な間隔で一瞬首を大きく振り向ける。
+    // 気づき演出(noticing/beckoning)に入ったらチラ見の意味がなくなる（もう気づいてるので）ため対象外
+    if (
+      zoneNow === "far" && !paused && !conversing && !noticing && !beckoning &&
+      t > nextGlanceAt.current
+    ) {
+      glanceUntil.current = t + GLANCE_DURATION_S;
+      nextGlanceAt.current = t + GLANCE_DURATION_S + lerp(GLANCE_INTERVAL_MIN_S, GLANCE_INTERVAL_MAX_S, Math.random());
+    }
+    const glancing = zoneNow === "far" && t < glanceUntil.current;
 
     if (paused) {
       // デバッグの「⏸ 停止」中: 歩行・接近/徘徊・向きすべて更新せずその場に完全に固める
@@ -630,9 +661,12 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const dz = targetZ - vrm.scene.position.z;
         const rel = Math.atan2(dx, dz) - bodyYaw.current; // 体の向きに対する相対ヨー
         const relNorm = Math.atan2(Math.sin(rel), Math.cos(rel)); // 最短経路へ正規化
-        neckYawTarget = Math.max(-NECK_FOLLOW_MAX, Math.min(NECK_FOLLOW_MAX, relNorm * NECK_FOLLOW_FRAC));
+        // チラ見中は通常の追従角上限(NECK_FOLLOW_MAX)より深く回し、「ハッ」と気づいたのが
+        // 分かる大きさにする。通常時は浅い追従のまま(常時ゆるく効いてるだけでは遠目に気づきにくいため)
+        const neckMax = glancing ? GLANCE_NECK_MAX : NECK_FOLLOW_MAX;
+        neckYawTarget = Math.max(-neckMax, Math.min(neckMax, relNorm * NECK_FOLLOW_FRAC));
       }
-      const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : NECK_FOLLOW_LERP;
+      const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : glancing ? damp(GLANCE_LERP, delta) : NECK_FOLLOW_LERP;
       neckBone.current.rotation.y = lerp(neckBone.current.rotation.y, neckYawTarget, neckLerp);
     }
 
