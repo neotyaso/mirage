@@ -268,6 +268,7 @@ export function Playground() {
           {([
             ["durationS", "長さ(秒)", 0.2, 2],
             ["neckMax", "首の最大角(rad)", 0.1, 1.2],
+            ["chestMax", "胸(上半身)の最大角(rad)", 0, 1.2],
             ["lerp", "振り向く速さ", 0.05, 0.6],
             ["intervalMinS", "間隔・最短(秒)", 0.5, 10],
             ["intervalMaxS", "間隔・最長(秒)", 0.5, 15],

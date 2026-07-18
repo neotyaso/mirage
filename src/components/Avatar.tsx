@@ -176,9 +176,14 @@ export interface GlanceParams {
   // 徘徊が「歩いている→止まった」瞬間は、立ち止まってふと振り返る動きとして特に自然に見える
   // タイミングなので、この確率でランダムタイマーを待たずにチラ見を前倒しで誘発する
   pauseChance: number;
+  // 体(胸)が来場者の方をどれだけ一緒にひねるか(ラジアン)。首だけでは最大43°程度が限界で、
+  // 体が真後ろ(180°)を向いている時は首を振っても来場者側にほぼ届かず「チラ見」に見えない
+  // （実際に人が肩越しに振り返る時も、首だけでなく上半身をひねっている）。
+  // 胸→首の順で角度を分担する(胸が回した分だけ首の負担が減る)ので、合計でneckMax+chestMaxまで回せる
+  chestMax: number;
 }
 export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
-  durationS: 0.8, intervalMinS: 3.5, intervalMaxS: 8.0, neckMax: 0.75, lerp: 0.22, pauseChance: 0.6,
+  durationS: 0.8, intervalMinS: 3.5, intervalMaxS: 8.0, neckMax: 0.75, lerp: 0.22, pauseChance: 0.6, chestMax: 0.55,
 };
 
 /**
@@ -690,15 +695,28 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // 首は向き全体の一部(NECK_FOLLOW_FRAC)だけこなし、残りは頭のLookAtが補うので回りすぎない
     if (neckBone.current) {
       let neckYawTarget = 0;
+      let chestYawTarget = 0;
       if (fc) {
         const dx = targetX - vrm.scene.position.x;
         const dz = targetZ - vrm.scene.position.z;
         const rel = Math.atan2(dx, dz) - bodyYaw.current; // 体の向きに対する相対ヨー
         const relNorm = Math.atan2(Math.sin(rel), Math.cos(rel)); // 最短経路へ正規化
-        // チラ見中は通常の追従角上限(NECK_FOLLOW_MAX)より深く回し、「ハッ」と気づいたのが
-        // 分かる大きさにする。通常時は浅い追従のまま(常時ゆるく効いてるだけでは遠目に気づきにくいため)
-        const neckMax = glancing ? glanceParams.neckMax : NECK_FOLLOW_MAX;
-        neckYawTarget = Math.max(-neckMax, Math.min(neckMax, relNorm * NECK_FOLLOW_FRAC));
+        if (glancing) {
+          // チラ見中は首(最大でもneckMax、約43°)だけでは体が来場者の真後ろを向いている時に
+          // 全く届かない（首を目一杯振っても、まだ100°以上そっぽを向いたまま）。実際に人が
+          // 肩越しに振り返る時も首だけでなく上半身をひねっているのに倣い、胸(chest)にも
+          // 優先的に角度を分担させ、残りを首が追加でカバーする（胸→首の順で角度を消化）
+          chestYawTarget = Math.max(-glanceParams.chestMax, Math.min(glanceParams.chestMax, relNorm));
+          const remaining = relNorm - chestYawTarget;
+          neckYawTarget = Math.max(-glanceParams.neckMax, Math.min(glanceParams.neckMax, remaining));
+        } else {
+          // 通常時は浅い追従のまま(常時ゆるく効いてるだけでは遠目に気づきにくいため)、胸は動かさない
+          neckYawTarget = Math.max(-NECK_FOLLOW_MAX, Math.min(NECK_FOLLOW_MAX, relNorm * NECK_FOLLOW_FRAC));
+        }
+      }
+      if (chest) {
+        const chestLerp = glancing ? damp(glanceParams.lerp, delta) : NECK_FOLLOW_LERP;
+        chest.rotation.y = lerp(chest.rotation.y, chestYawTarget, chestLerp);
       }
       const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : glancing ? damp(glanceParams.lerp, delta) : NECK_FOLLOW_LERP;
       neckBone.current.rotation.y = lerp(neckBone.current.rotation.y, neckYawTarget, neckLerp);
