@@ -13,6 +13,10 @@ export interface FaceCenter {
   y: number; // 0〜1（上→下）
 }
 
+// 目尻・目頭の4点(MediaPipe 468点トポロジの固定インデックス)。虹彩ランドマークは
+// モデルによって出力有無が変わるため使わず、常に存在する目の輪郭点の平均で近似する
+const EYE_CORNER_LANDMARK_INDICES = [33, 133, 362, 263];
+
 export interface FaceExpression {
   smile: number;    // 0〜1
   surprised: number; // 0〜1
@@ -51,9 +55,11 @@ export function useFaceDetection(enabled: boolean = true) {
   const presentRef = useRef(false);
   const faceCountRef = useRef(0);
   const faceCenterRef = useRef<FaceCenter | null>(null);
+  const eyeCenterRef = useRef<FaceCenter | null>(null); // 顔全体でなく目の高さ・位置(視線を合わせる用)
   const faceSizeRef = useRef(0);
   const faceYawRef = useRef(0); // 主対象の頭の左右向き（ラジアン。0=正面、絶対値が大きいほどそっぽを向いている）
   const allFaceCentersRef = useRef<FaceCenter[]>([]);
+  const allEyeCentersRef = useRef<FaceCenter[]>([]);
   const expressionRef = useRef<FaceExpression>({ smile: 0, surprised: 0 });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +136,14 @@ export function useFaceDetection(enabled: boolean = true) {
             const xs = lm.map((p) => p.x);
             return Math.max(...xs) - Math.min(...xs);
           });
+          const eyeCenters: FaceCenter[] = landmarks.map((lm, i) => {
+            const pts = EYE_CORNER_LANDMARK_INDICES.map((idx) => lm[idx]).filter(Boolean);
+            if (pts.length === 0) return centers[i];
+            return {
+              x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+              y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+            };
+          });
 
           // 「話しかけてる相手」の主対象を選ぶ。直前フレームで追っていた位置に一番近い顔を
           // 引き続き主対象にする（見失っていた/初回なら、一番大きい＝一番近い顔を選ぶ）
@@ -150,6 +164,8 @@ export function useFaceDetection(enabled: boolean = true) {
 
           allFaceCentersRef.current = centers;
           faceCenterRef.current = centers[primaryIdx] ?? null;
+          allEyeCentersRef.current = eyeCenters;
+          eyeCenterRef.current = eyeCenters[primaryIdx] ?? null;
           const rawWidth = widths[primaryIdx] ?? 0;
           faceSizeRef.current = faceSizeRef.current === 0
             ? rawWidth
@@ -177,9 +193,11 @@ export function useFaceDetection(enabled: boolean = true) {
         } else {
           primaryCenter = null;
           faceCenterRef.current = null;
+          eyeCenterRef.current = null;
           faceSizeRef.current = 0;
           faceYawRef.current = 0;
           allFaceCentersRef.current = [];
+          allEyeCentersRef.current = [];
           expressionRef.current = { smile: 0, surprised: 0 };
         }
 
@@ -236,9 +254,11 @@ export function useFaceDetection(enabled: boolean = true) {
     presentRef,
     faceCountRef,
     faceCenterRef,
+    eyeCenterRef,
     faceSizeRef,
     faceYawRef,
     allFaceCentersRef,
+    allEyeCentersRef,
     expressionRef,
     ready,
     error,

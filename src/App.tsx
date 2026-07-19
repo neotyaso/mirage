@@ -83,7 +83,8 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
 // 初回の「気づいた」呼び込み(チャイム+呼び込み声)は、far到達で即座には鳴らさない。
 // Avatar.tsx側の「チラ見」演出(farではまだ気づいてないフリを続ける)と足並みを揃えるため、
 // mid/nearまで寄ってきたら即座に、farのまま粘る場合だけこの時間だけ待ってから鳴らす
-// （放置しすぎると遠くの通行人を完全に無視することになるための保険）
+// （放置しすぎると遠くの通行人を完全に無視することになるための保険。呼び込み自体は展示の
+// 核なので、farで無音のままにするのは誤りだった＝一度削除して復元した経緯あり）
 const GREET_FALLBACK_MS = 4000;
 
 // 会話モードが始まった瞬間に必ず言う一言。会話開始後はレムは黙って聞く設計なので、
@@ -145,7 +146,7 @@ export default function App() {
   const panRef = useRef(0); // 空間オーディオ: -1(左)〜1(右)。来場者の画面上の左右位置に追従
 
   // 顔検知は会話コンテキストより先に用意する（getConversationContextが下のrefを読むため）
-  const { videoRef, presentRef, faceCountRef, faceCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, expressionRef, ready: camReady, error: camError } =
+  const { videoRef, presentRef, faceCountRef, faceCenterRef, eyeCenterRef, faceSizeRef, faceYawRef, allFaceCentersRef, allEyeCentersRef, expressionRef, ready: camReady, error: camError } =
     useFaceDetection();
 
   // 直近の視覚コメント（見た目の一言）。会話LLMに「見た目」を文脈として渡し、会話の中で
@@ -349,7 +350,7 @@ export default function App() {
   // 自動呼び込み制御：距離ゾーンに応じてセリフ・クールダウンを変える
   const lastCall = useRef(0);
   const wasPresent = useRef(false);
-  // near まで近づいたら自動で会話モードON。離れたら自動でOFF＋次の来場者のため履歴リセット
+  // mid/nearまで近づいたら自動で会話モードON。離れたら自動でOFF＋次の来場者のため履歴リセット
   const lastPresentAtRef = useRef(performance.now());
   const AWAY_TIMEOUT_MS = 4000; // これだけ不在が続いたら「離れた」と判断（顔検出の一瞬の途切れで切れないように）
   // 会話中に相手の顔検出が一瞬途切れて自動リセットされた直後の復帰では、
@@ -432,8 +433,6 @@ export default function App() {
           if (!hasGreetedRef.current) {
             // まだ「気づいた」呼び込みをしていない来場者。mid/nearまで寄ってきたら即座に、
             // farのまま粘る場合はGREET_FALLBACK_MSだけ待ってから、初回の気づき(チャイム+呼び込み)を鳴らす。
-            // far到達で即声にしないのは、Avatar側の「チラ見」演出(farではまだ気づいてないフリを続ける)
-            // と足並みを揃えるため——即声にすると「見てないフリ」の説得力が消えてしまう
             const reachedInteractive = z === "mid" || z === "near";
             if (
               (reachedInteractive || now - firstSeenAtRef.current > GREET_FALLBACK_MS) &&
@@ -474,8 +473,10 @@ export default function App() {
                 });
               }
             }
-          } else if (now - lastCall.current > COOLDOWN[z] && now - lastCall.current > 1500) {
-            // 気づき済み。以降はゾーン別クールダウンで呼び込みを繰り返す（従来通り）
+          } else if (z === "far" && now - lastCall.current > COOLDOWN[z] && now - lastCall.current > 1500) {
+            // 気づき済み後もfarのまま粘る来場者にだけ、クールダウンで呼び込みを繰り返す。
+            // mid/nearは会話が自動で始まる/再開する(下のstartConversationの分岐)ので、
+            // ここで改めて「ねえねえ」系の呼び込みを繰り返す必要はない
             callOut(z);
             lastCall.current = now;
           }
@@ -509,7 +510,7 @@ export default function App() {
 
       if (p) lastPresentAtRef.current = performance.now();
       if (started && !paused) {
-        if (z === "near" && convState === "idle") {
+        if ((z === "mid" || z === "near") && convState === "idle") {
           // 会話モードは開始しても来場者が話すまでレムは黙って聞くだけの設計だが、それだと
           // 「近づいたのに何も起きない＝壊れてる？」と感じられてしまう。会話開始の瞬間は必ず
           // 一言喋って「聞く態勢に入った」ことを分かりやすくする（呼び込みの通常クールダウンとは別枠）
@@ -564,7 +565,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <Room />
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} allFaceCentersRef={allFaceCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} eyeCenterRef={eyeCenterRef} allFaceCentersRef={allFaceCentersRef} allEyeCentersRef={allEyeCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
           {/* 足元の接地影。「本当にそこに立っている」感を出す（暖色寄りのやわらかい影） */}
           <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>

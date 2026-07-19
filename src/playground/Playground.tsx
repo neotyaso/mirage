@@ -2,8 +2,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid, ContactShadows } from "@react-three/drei";
-import { Avatar, DEFAULT_BECKON_POSE, DEFAULT_GLANCE_PARAMS } from "../components/Avatar";
-import type { BeckonPose, GlanceParams } from "../components/Avatar";
+import { Avatar, DEFAULT_BECKON_POSE, DEFAULT_GLANCE_PARAMS, DEFAULT_ANCHOR_GAZE_PARAMS } from "../components/Avatar";
+import type { BeckonPose, GlanceParams, AnchorGazeParams, WanderAnchorKey } from "../components/Avatar";
 import { Room } from "../components/Room";
 import { useFaceDetection, getDistanceZone } from "../hooks/useFaceDetection";
 import type { DistanceZone, FaceCenter, FaceExpression } from "../hooks/useFaceDetection";
@@ -64,6 +64,20 @@ export function Playground() {
     const next = { ...glanceParamsRef.current, [k]: v };
     glanceParamsRef.current = next;
     setGlanceParams(next);
+  }
+
+  // 「意味のある徘徊」（窓/プラントへ向かう演出）パラメータのライブ調整（チラ見と同じ方式）
+  const [anchorGazeParams, setAnchorGazeParams] = useState<AnchorGazeParams>({ ...DEFAULT_ANCHOR_GAZE_PARAMS });
+  const anchorGazeParamsRef = useRef<AnchorGazeParams>({ ...DEFAULT_ANCHOR_GAZE_PARAMS });
+  function setAnchorGazeField(k: keyof AnchorGazeParams, v: number) {
+    const next = { ...anchorGazeParamsRef.current, [k]: v };
+    anchorGazeParamsRef.current = next;
+    setAnchorGazeParams(next);
+  }
+  // 「窓へ」「プラントへ」ボタンでの強制デモ発火（チラ見の手動発火と同じidパターン）
+  const forceAnchorRef = useRef<{ key: WanderAnchorKey; id: number } | null>(null);
+  function forceAnchor(key: WanderAnchorKey) {
+    forceAnchorRef.current = { key, id: Date.now() };
   }
 
   // ---- カメラ(実顔検出) ----
@@ -171,6 +185,8 @@ export function Playground() {
             conversing={conv.state !== "idle" || fakeConversing}
             beckonPoseRef={beckonPoseRef}
             glanceParamsRef={glanceParamsRef}
+            anchorGazeParamsRef={anchorGazeParamsRef}
+            forceAnchorRef={forceAnchorRef}
           />
           <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
@@ -284,6 +300,47 @@ export function Playground() {
           ))}
           <button
             onClick={() => navigator.clipboard.writeText(JSON.stringify(glanceParams))}
+            style={{ ...btnStyle, background: "#374151", marginTop: 4 }}
+          >
+            値をコピー
+          </button>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>意味のある徘徊（窓/プラントへ向かう演出）</span>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>
+            本番では「不在/遠い」ゾーンで徘徊の目標を選び直すたびchanceの確率で窓かプラントへ
+            向かう（残りは従来通りの完全ランダム点）。到着後は通常の徘徊停止より長く留まり、
+            首/胸をその方向へ向ける。下のボタンはこの抽選を待たず今すぐその目的地へ歩かせる
+            （「不在」または「遠い」ゾーンでのみ実際に反映される）
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => forceAnchor("window")} style={{ ...btnStyle, background: "#374151" }}>
+              🪟 窓へ
+            </button>
+            <button onClick={() => forceAnchor("plant")} style={{ ...btnStyle, background: "#374151" }}>
+              🌿 プラントへ
+            </button>
+          </div>
+          {([
+            ["chance", "目的地を選ぶ確率", 0, 1],
+            ["lingerMinS", "滞在(秒)・最短", 1, 15],
+            ["lingerMaxS", "滞在(秒)・最長", 1, 20],
+            ["neckMax", "首の最大角(rad)", 0.1, 1.2],
+            ["chestMax", "胸(上半身)の最大角(rad)", 0, 1.2],
+            ["turnLerp", "向き直る速さ", 0.05, 0.6],
+            ["pitch", "縦の傾き(rad)：窓=見上げ/プラント=見下ろし", 0, 0.4],
+          ] as [keyof AnchorGazeParams, string, number, number][]).map(([k, label, min, max]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ ...labelStyle, minWidth: 148, fontSize: 11 }}>{label} {anchorGazeParams[k].toFixed(2)}</span>
+              <input
+                type="range" min={min} max={max} step={0.02} value={anchorGazeParams[k]}
+                onChange={(e) => setAnchorGazeField(k, Number(e.target.value))} style={{ flex: 1 }}
+              />
+            </div>
+          ))}
+          <button
+            onClick={() => navigator.clipboard.writeText(JSON.stringify(anchorGazeParams))}
             style={{ ...btnStyle, background: "#374151", marginTop: 4 }}
           >
             値をコピー

@@ -46,7 +46,9 @@ export interface AvatarProps {
   speakingRef?: MutableRefObject<boolean>;
   volumeRef?: MutableRefObject<number>;
   faceCenterRef?: MutableRefObject<FaceCenter | null>;
+  eyeCenterRef?: MutableRefObject<FaceCenter | null>;
   allFaceCentersRef?: MutableRefObject<FaceCenter[]>;
+  allEyeCentersRef?: MutableRefObject<FaceCenter[]>;
   expressionRef?: MutableRefObject<FaceExpression>;
   faceSizeRef?: MutableRefObject<number>;
   // 行動タグ(useConversation.ts)。idが変わるたびに新規トリガーとして扱う。
@@ -63,6 +65,11 @@ export interface AvatarProps {
   beckonPoseRef?: MutableRefObject<BeckonPose>;
   // チラ見パラメータのライブ上書き（Playgroundのスライダー用）。未指定ならDEFAULT_GLANCE_PARAMS
   glanceParamsRef?: MutableRefObject<GlanceParams>;
+  // 「意味のある徘徊」パラメータのライブ上書き（Playgroundのスライダー用）。未指定ならDEFAULT_ANCHOR_GAZE_PARAMS
+  anchorGazeParamsRef?: MutableRefObject<AnchorGazeParams>;
+  // Playground手動デモ発火専用: idが変わるたびに、徘徊中でなくても即座に指定の目的地(窓/プラント)へ
+  // 向かわせる（本番の自動抽選フローには乗らない。チラ見の"glance"手動発火と同じパターン）
+  forceAnchorRef?: MutableRefObject<{ key: WanderAnchorKey; id: number } | null>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -91,11 +98,48 @@ const WANDER_PAUSE_MAX = 5;
 const IDLE_GESTURE_CHANCE = 0.4;
 const IDLE_GESTURE_TAGS = ["stretch", "nod", "tilt"] as const;
 
-function pickWanderTarget(): { x: number; z: number } {
+// 「意味のある徘徊」: 完全ランダムな徘徊点の代わりに、低確率でこの2つの目的地(窓/プラント)
+// のどちらかへ向かわせる（NEXT.md「徘徊を意味のある行動に変える」参照）。
+export type WanderAnchorKey = "window" | "plant";
+// 実際に歩いて行ける床座標(WANDER_BOUNDS内)。窓はWindow.tsxのWIN_POS(x=0,z=-1.98)の手前・
+// 徘徊範囲の奥ギリギリ(zMin付近)。プラントは実物(コメント上部参照、x=1.82,z=-1.78=範囲外の
+// 障害物)へ近寄りすぎず、WANDER_BOUNDS内でそれらしい立ち位置(x=1.1,z=-1.1)を使う
+const WANDER_ANCHORS: Record<WanderAnchorKey, { x: number; z: number }> = {
+  window: { x: 0, z: -1.25 },
+  plant: { x: 1.1, z: -1.1 },
+};
+// 到着後に向く先(視線・胸/首のヨー計算用のワールドXZ)。上のWANDER_ANCHORS(足を止める床位置)
+// とは別に、実物自体の位置(窓=外を眺める先、プラント=葉を見下ろす先)を使う
+const ANCHOR_LOOK_WORLD: Record<WanderAnchorKey, { x: number; z: number }> = {
+  window: { x: 0, z: -1.98 },
+  plant: { x: 1.82, z: -1.78 },
+};
+
+function pickWanderTarget(anchorChance: number): { x: number; z: number; anchor: WanderAnchorKey | null } {
+  if (Math.random() < anchorChance) {
+    const key: WanderAnchorKey = Math.random() < 0.5 ? "window" : "plant";
+    const p = WANDER_ANCHORS[key];
+    return { x: p.x, z: p.z, anchor: key };
+  }
   const x = lerp(WANDER_BOUNDS.xMin, WANDER_BOUNDS.xMax, Math.random());
   const z = lerp(WANDER_BOUNDS.zMin, WANDER_BOUNDS.zMax, Math.random());
-  return { x, z };
+  return { x, z, anchor: null };
 }
+
+// 目的地(窓/プラント)に着いた時の振る舞い。Playgroundでライブ調整できるよう、値は定数でなく
+// オブジェクトにする(手招みポーズ・チラ見と同じ方式)
+export interface AnchorGazeParams {
+  chance: number;      // 徘徊の目標を選び直す時、完全ランダムの代わりにこの確率でどちらかの目的地へ向かう
+  lingerMinS: number;  // 到着後に留まる秒数(最短)。通常の徘徊停止(WANDER_PAUSE_MIN/MAX)より長くして「用があって来た」感を出す
+  lingerMaxS: number;  // 同(最長)
+  neckMax: number;     // 向き直る時の首の最大ヨー(チラ見と同じ胸→首の分担方式)
+  chestMax: number;    // 同・胸
+  turnLerp: number;    // 向き直る速さ
+  pitch: number;       // 縦の傾き(ラジアン)。プラントではこの値だけ見下ろし、窓ではこの値だけ見上げる
+}
+export const DEFAULT_ANCHOR_GAZE_PARAMS: AnchorGazeParams = {
+  chance: 0.35, lingerMinS: 4, lingerMaxS: 7, neckMax: 0.5, chestMax: 0.45, turnLerp: 0.12, pitch: 0.12,
+};
 
 // 表情は中間値を使わず二値判定（しきい値以上でON=1、未満でOFF=0）
 const SMILE_THRESHOLD = 0.3; // 仮値。低いと真顔でも笑顔判定されやすい→playgroundで要調整
@@ -199,7 +243,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -230,6 +274,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
   const wanderPauseUntil = useRef(0);
   // 徘徊が「歩いている→止まった」に切り替わった瞬間を検知するための前フレーム値
   const prevWanderWalking = useRef(true);
+  // 現在のwanderTargetが「意味のある目的地」(窓/プラント)かどうか。nullなら従来通りの完全ランダム点
+  const wanderAnchor = useRef<WanderAnchorKey | null>(null);
+  // Playgroundの強制デモ発火(forceAnchorRef)の連番。idが変わった時だけ新規トリガーとして扱う
+  const lastForceAnchorId = useRef(0);
   const bodyYaw = useRef(0);
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
@@ -424,6 +472,18 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       triggerAction(action.tag);
     }
 
+    // Playground手動デモ発火: 「窓へ」「プラントへ」ボタンで即座に徘徊目標を切り替える。
+    // prevWanderWalkingを立てておくことで、この後の徘徊移動ロジックが「歩いていて今まさに
+    // 到着した」扱いで処理し、到着時の滞在演出(リンガー上書き)を確実に発火させる
+    // （zoneが不在/遠いの時のみ実際に反映される。それ以外は次にwander branchへ戻った時に有効）
+    const forceAnchor = forceAnchorRef?.current;
+    if (forceAnchor && forceAnchor.id !== lastForceAnchorId.current) {
+      lastForceAnchorId.current = forceAnchor.id;
+      wanderAnchor.current = forceAnchor.key;
+      wanderTarget.current = { ...WANDER_ANCHORS[forceAnchor.key] };
+      prevWanderWalking.current = true;
+    }
+
     // ジェスチャークリップの再生・重み計算（入り/抜けをフェード、終了したら自動停止）
     let isGesturing = false;
     if (activeGesture.current) {
@@ -473,6 +533,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
 
     let isWalking = false;
     let retreating = false;
+    // 徘徊で窓/プラントへ向かい、到着して佇んでいる間だけtrue（毎フレーム下の徘徊ブロックで
+    // 設定し直す。他ブロックに入った時は自然にfalseへ戻る＝refでなくローカル変数で十分）
+    let atAnchor = false;
 
     // 現在の距離ゾーン（気づき演出の検知・接近演出の両方で使う）
     const zoneNow = getDistanceZone(faceSizeRef?.current ?? 0);
@@ -520,6 +583,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
     // zoneNowの制約は付けない: Playgroundの手動デモ発火(triggerAction("glance"))はどのゾーンでも
     // 見た目の動きを確認できるようにするため。自動発火自体は上のfar限定条件でしかスケジュールされない
     const glancing = t < glanceUntil.current;
+
+    // 「意味のある徘徊」パラメータ（Playgroundのライブ上書き。未指定なら既定値）
+    const agp = anchorGazeParamsRef?.current ?? DEFAULT_ANCHOR_GAZE_PARAMS;
 
     if (paused) {
       // デバッグの「⏸ 停止」中: 歩行・接近/徘徊・向きすべて更新せずその場に完全に固める
@@ -581,25 +647,39 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         const dist = Math.hypot(dx, dz);
 
         if (dist < WANDER_ARRIVE_DIST) {
-          // 歩いていた状態から止まった瞬間だけ、低確率で伸び/頷く/首かしげるのどれかを挟む
-          // (「ただ突っ立ってるだけ」を防ぐ生活感演出。waveは対象外)
+          // 歩いていた状態から止まった瞬間の演出。目的地(窓/プラント)に着いた場合と、
+          // ただの通過点に着いた場合とで振る舞いを分ける
           if (prevWanderWalking.current) {
-            if (Math.random() < IDLE_GESTURE_CHANCE) {
-              const pick = IDLE_GESTURE_TAGS[Math.floor(Math.random() * IDLE_GESTURE_TAGS.length)];
-              triggerAction(pick);
-            }
-            // 立ち止まって「ふと振り返る」のはチラ見が最も自然に見えるタイミングなので、
-            // 止まった瞬間だけランダムタイマー(nextGlanceAt)を待たずに前倒しで誘発する。
-            // 直接glanceUntilを書き換えず「次フレームで即発火する」よう仕込むだけなので、
-            // 通常のチラ見発火ロジック(このフレームの少し上)と経路が分かれず一本化される
-            if (zone === "far" && !glancing && Math.random() < glanceParams.pauseChance) {
-              nextGlanceAt.current = t - 1;
+            if (wanderAnchor.current) {
+              // 目的地に着いた: 「用があって来た」ことが伝わるよう、通常の徘徊停止より長く
+              // 留まらせる。ここで滞在終了時刻を上書きするので、経路が短くwanderPauseUntilが
+              // 既に過去になっていた場合でも確実に見える長さの滞在になる
+              wanderPauseUntil.current = t + lerp(agp.lingerMinS, agp.lingerMaxS, Math.random());
+            } else {
+              // ただの通過点: 低確率で伸び/頷く/首かしげるのどれかを挟む
+              // (「ただ突っ立ってるだけ」を防ぐ生活感演出。waveは対象外)
+              if (Math.random() < IDLE_GESTURE_CHANCE) {
+                const pick = IDLE_GESTURE_TAGS[Math.floor(Math.random() * IDLE_GESTURE_TAGS.length)];
+                triggerAction(pick);
+              }
+              // 立ち止まって「ふと振り返る」のはチラ見が最も自然に見えるタイミングなので、
+              // 止まった瞬間だけランダムタイマー(nextGlanceAt)を待たずに前倒しで誘発する。
+              // 直接glanceUntilを書き換えず「次フレームで即発火する」よう仕込むだけなので、
+              // 通常のチラ見発火ロジック(このフレームの少し上)と経路が分かれず一本化される
+              if (zone === "far" && !glancing && Math.random() < glanceParams.pauseChance) {
+                nextGlanceAt.current = t - 1;
+              }
             }
           }
+          // 目的地に留まっている間は毎フレームtrue（下の視線処理で「窓の外を眺める/プラントを
+          // 見下ろす」向きに使う）
+          atAnchor = wanderAnchor.current !== null;
           isWalking = false;
           if (t > wanderPauseUntil.current) {
+            const pick = pickWanderTarget(agp.chance);
+            wanderAnchor.current = pick.anchor;
+            wanderTarget.current = { x: pick.x, z: pick.z };
             wanderPauseUntil.current = t + lerp(WANDER_PAUSE_MIN, WANDER_PAUSE_MAX, Math.random());
-            wanderTarget.current = pickWanderTarget();
           }
         } else {
           isWalking = true;
@@ -664,7 +744,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
 
     // 視線追従: 複数人いれば順番にスキャン、1人ならその人を見る
     const all = allFaceCentersRef?.current ?? [];
+    const allEyes = allEyeCentersRef?.current ?? [];
     let fc = faceCenterRef?.current ?? null;
+    // LookAt(視線)の目標だけは顔全体の中心でなく目の位置を使う。顔中心は鼻付近で、
+    // 特に会話の近距離だと「目の少し下」を見ているように見えてしまうため
+    let ec = eyeCenterRef?.current ?? fc;
     if (all.length >= 2) {
       const now = t * 1000;
       if (now - lastScan.current > SCAN_INTERVAL) {
@@ -672,6 +756,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
         lastScan.current = now;
       }
       fc = all[scanIndex.current] ?? fc;
+      ec = allEyes[scanIndex.current] ?? fc;
     }
     // 視線サッケード: 不規則な間隔で小さなオフセットを取り直す。lerpで滑らかに反映されるので
     // 目標に張り付かず微妙に揺れる＝生きた目に見える（気づき演出中はロック感を優先し揺らぎを抑える）
@@ -681,14 +766,19 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
       saccade.current.y = (Math.random() * 2 - 1) * SACCADE_Y * scale;
       nextSaccadeAt.current = t + lerp(SACCADE_MIN_S, SACCADE_MAX_S, Math.random());
     }
-    const targetX = (fc ? lerp(-1.5, 1.5, 1 - fc.x) : 0) + saccade.current.x; // カメラは鏡像なので反転
-    const targetY = (fc ? lerp(2.5, 0.5, fc.y) : 1.5) + saccade.current.y;
+    const targetX = (ec ? lerp(-1.5, 1.5, 1 - ec.x) : 0) + saccade.current.x; // カメラは鏡像なので反転
+    const targetY = (ec ? lerp(2.5, 0.5, ec.y) : 1.5) + saccade.current.y;
     const targetZ = 2;
     // 気づいた瞬間は視線を素早く来場者にロック（「私を見てる」を強く感じさせる）。普段は緩やかに追う
     const gazeLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : GAZE_LERP;
     lookAtTarget.current.position.x = lerp(lookAtTarget.current.position.x, targetX, gazeLerp);
     lookAtTarget.current.position.y = lerp(lookAtTarget.current.position.y, targetY, gazeLerp);
     lookAtTarget.current.position.z = targetZ;
+
+    // 「意味のある徘徊」の視線: 目的地(窓/プラント)に佇んでいる間・誰もいない(absent)時だけ、
+    // 来場者ではなくその目的地の方を向く。far中(誰か検知はできている)はチラ見/通常追従を
+    // 優先させたいので対象外にする（この演出とチラ見の役割が被らないようにするための線引き）
+    const anchorGazing = atAnchor && zoneNow === "absent" && !glancing;
 
     // 首(neck)の追従: 目/頭のLookAtに加えて首も来場者へ向ける＝「吸い付いて追う」感。
     // nod/tiltは neck.x/z を使うので、ここでは干渉しない neck.y(ヨー) だけを動かす。
@@ -713,13 +803,35 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, allFaceCentersRe
           // 通常時は浅い追従のまま(常時ゆるく効いてるだけでは遠目に気づきにくいため)、胸は動かさない
           neckYawTarget = Math.max(-NECK_FOLLOW_MAX, Math.min(NECK_FOLLOW_MAX, relNorm * NECK_FOLLOW_FRAC));
         }
+      } else if (anchorGazing) {
+        // 目的地の実物(窓/プラント)のワールド座標へ、チラ見と同じ胸→首の分担方式で向き直る
+        const world = ANCHOR_LOOK_WORLD[wanderAnchor.current!];
+        const dx = world.x - vrm.scene.position.x;
+        const dz = world.z - vrm.scene.position.z;
+        const rel = Math.atan2(dx, dz) - bodyYaw.current;
+        const relNorm = Math.atan2(Math.sin(rel), Math.cos(rel));
+        chestYawTarget = Math.max(-agp.chestMax, Math.min(agp.chestMax, relNorm));
+        const remaining = relNorm - chestYawTarget;
+        neckYawTarget = Math.max(-agp.neckMax, Math.min(agp.neckMax, remaining));
       }
       if (chest) {
-        const chestLerp = glancing ? damp(glanceParams.lerp, delta) : NECK_FOLLOW_LERP;
+        const chestLerp = glancing || anchorGazing ? damp(anchorGazing ? agp.turnLerp : glanceParams.lerp, delta) : NECK_FOLLOW_LERP;
         chest.rotation.y = lerp(chest.rotation.y, chestYawTarget, chestLerp);
       }
-      const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta) : glancing ? damp(glanceParams.lerp, delta) : NECK_FOLLOW_LERP;
+      const neckLerp = noticing ? damp(NOTICE_GAZE_LERP, delta)
+        : glancing || anchorGazing ? damp(anchorGazing ? agp.turnLerp : glanceParams.lerp, delta)
+        : NECK_FOLLOW_LERP;
       neckBone.current.rotation.y = lerp(neckBone.current.rotation.y, neckYawTarget, neckLerp);
+
+      // 縦の傾き: nod/tilt(activeAction)がneck.xを使っている間は干渉しないよう手を出さない。
+      // プラントでは見下ろす(+)、窓では見上げる(-)方向へagp.pitchだけ傾ける。それ以外は0へ戻す
+      if (!activeAction.current) {
+        const pitchTarget = anchorGazing
+          ? (wanderAnchor.current === "plant" ? agp.pitch : -agp.pitch)
+          : 0;
+        const pitchLerp = anchorGazing ? damp(agp.turnLerp, delta) : NECK_FOLLOW_LERP;
+        neckBone.current.rotation.x = lerp(neckBone.current.rotation.x, pitchTarget, pitchLerp);
+      }
     }
 
     // 発話中のジェスチャー: 腕は基本姿勢のまま、体だけ横揺れさせる
