@@ -14,3 +14,6 @@ tools/*.blend
 
 # ネストしたgitリポジトリ(TripoSGパイプライン、独自に.venv/モデルウェイトを持つワークスペース)
 tools/img3d/
+
+# 展示パネルPDF: 学籍番号・氏名が記載されているためリポジトリには含めない(手元管理)
+mirage-panels-b4.pdf
