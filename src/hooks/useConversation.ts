@@ -1,12 +1,11 @@
 import { useCallback, useRef, useState } from "react";
 
 // Groq: LLM(Chat Completions)とSTT(Whisper)を専用ハードウェア(LPU)で高速に処理する。
-// APIキーは vite.config.ts のプロキシがサーバー側で付与するのでここには書かない
 // キー未設定/オフライン時は使えないので .env.local に GROQ_API_KEY=gsk_... を設定すること
 const GROQ_CHAT_URL = "/groq/openai/v1/chat/completions";
 const GROQ_STT_URL = "/groq/openai/v1/audio/transcriptions";
-const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile"; // gemma2はGroqで廃止済み。もっと速さ重視なら "llama-3.1-8b-instant"
-const GROQ_STT_MODEL = "whisper-large-v3-turbo";
+const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
+const GROQ_STT_MODEL = "whisper-large-v3";
 
 // 会場のWi-Fiが落ちる/Groqが不調な場合のフォールバック（完全ローカル）
 // 事前に `python stt_server.py`（.venv）とOllama(`ollama run gemma2`)を起動しておくこと
