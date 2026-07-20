@@ -80,6 +80,16 @@ export function Playground() {
     forceAnchorRef.current = { key, id: Date.now() };
   }
 
+  // 気づき演出の振り向き方(3パターン)を個別に呼び分けるデバッグ発火。
+  // 気づいた瞬間の体の向き(noticeStartYaw)を強制的に指定してから気づき演出そのものを発火させる
+  const forceNoticeRef = useRef<{ tier: "front" | "side" | "back"; id: number } | null>(null);
+  function forceNotice(tier: "front" | "side" | "back") {
+    forceNoticeRef.current = { tier, id: Date.now() };
+  }
+
+  // コントロールパネルがアバターに被って邪魔な時に隠せるようにする
+  const [panelVisible, setPanelVisible] = useState(true);
+
   // ---- カメラ(実顔検出) ----
   const [cameraOn, setCameraOn] = useState(false);
   const cam = useFaceDetection(cameraOn);
@@ -187,6 +197,7 @@ export function Playground() {
             glanceParamsRef={glanceParamsRef}
             anchorGazeParamsRef={anchorGazeParamsRef}
             forceAnchorRef={forceAnchorRef}
+            forceNoticeRef={forceNoticeRef}
           />
           <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
@@ -212,7 +223,14 @@ export function Playground() {
         }}
       />
 
-      <div style={panelStyle}>
+      <button
+        onClick={() => setPanelVisible((v) => !v)}
+        style={{ ...btnStyle, position: "absolute", top: 12, left: 12, zIndex: 20, background: "#374151" }}
+      >
+        {panelVisible ? "✕ 隠す" : "☰ パネル表示"}
+      </button>
+
+      <div style={{ ...panelStyle, display: panelVisible ? "flex" : "none", paddingTop: 44 }}>
         <div style={rowStyle}>
           <span style={labelStyle}>カメラ（実顔検出）</span>
           <button onClick={toggleCamera} style={{ ...btnStyle, background: cameraOn ? "#ef4444" : "#374151" }}>
@@ -370,6 +388,24 @@ export function Playground() {
             </button>
             <button onClick={() => triggerAction("tilt")} style={{ ...btnStyle, background: "#374151" }}>
               首をかしげる
+            </button>
+          </div>
+        </div>
+
+        <div style={rowStyle}>
+          <span style={labelStyle}>気づき演出（振り向き3パターン。体の向きを強制してから発火）</span>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>
+            気づいた瞬間の体の向きで振り向き方を変えている。3パターンを個別に呼んで首/角度を調整する用
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => forceNotice("front")} style={{ ...btnStyle, background: "#374151" }}>
+              正面(上目遣い)
+            </button>
+            <button onClick={() => forceNotice("side")} style={{ ...btnStyle, background: "#374151" }}>
+              横向き
+            </button>
+            <button onClick={() => forceNotice("back")} style={{ ...btnStyle, background: "#374151" }}>
+              背中向き
             </button>
           </div>
         </div>

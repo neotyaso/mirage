@@ -46,30 +46,41 @@ const LINES: Record<Exclude<DistanceZone, "absent">, string[]> = {
   far: [
     "ねえねえ！そこのあなた、こっち来てよ〜！",
     "おーい！ちょっと話していかない？",
+    "そこの人〜！ちょっとだけこっち見て〜！",
+    "暇なら話そうよ〜！すぐそこにいるからさ！",
   ],
   mid: [
     "あっ、いま目が合ったよね？ちょっとだけいいよね？",
     "ねえ、ちょっとだけ。すぐ終わるから！",
+    "お、気づいてくれた？もうちょっとこっち来てよ！",
+    "せっかくだし話していきなよ〜！",
   ],
   near: [
     "来てくれたんだ！嬉しいな、話しかけてほしかったんだよね。",
     "わあ、近い！何か聞きたいことある？",
+    "やった、来てくれた！何から話そっか！",
+    "おー本当に来た！暇してたんだよね、ありがとう！",
   ],
 };
 
-// 複数人向けセリフ（2人以上検出時に優先）
+// 複数人向けセリフ（2人以上検出時に優先）。faceCountRefは「2人以上か」の二値でしか
+// 判定していない(正確な人数は数えていない)ため、3人以上でも不自然にならないよう
+// 「二人」等の具体的な人数を決め打ちした言い回しは避ける
 const GROUP_LINES: Record<Exclude<DistanceZone, "absent">, string[]> = {
   far: [
-    "おーい！お二人さん、こっち来てよ〜！",
+    "おーい！そこの皆さん、こっち来てよ〜！",
     "ねえねえ！そこの皆さん、ちょっとだけいいですか？",
+    "そこの皆さん〜！一緒に来てよ〜！",
   ],
   mid: [
-    "お二人ですか？ちょうどよかった、話しかけたかったんです！",
-    "二人で来てくれたんだね、嬉しいな！",
+    "皆さんですか？ちょうどよかった、話しかけたかったんです！",
+    "一緒に来てくれたんだね、嬉しいな！",
+    "みんなでこっち来てよ、待ってたんだ！",
   ],
   near: [
-    "わあ、二人とも来てくれたんですね！どっちに話せばいいか迷っちゃう。",
-    "お二人さんいらっしゃい！何か聞きたいことある？",
+    "わあ、皆さん来てくれたんですね！誰から話そっか。",
+    "いらっしゃい！何か聞きたいことある？",
+    "みんな来てくれてありがとう！嬉しいな！",
   ],
 };
 
@@ -167,7 +178,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef, getCallout, refillCallouts } = useConversation(speakingRef, volumeRef, panRef, getConversationContext);
+  const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef, getConversationContext);
 
   // 行動タグ(頷く/首かしげる/手招き)をApp側からも発火する共通ヘルパー。
   // idは負のタイムスタンプにして、useConversation内部のLLMタグ検出が使う正の連番と衝突させない
@@ -337,12 +348,6 @@ export default function App() {
 
   function callOut(z: Exclude<DistanceZone, "absent">) {
     const isGroup = faceCountRef.current >= 2;
-    // 1人相手なら、事前生成しておいたLLMの第一声を優先（毎回違う言い回しで「生きてる」感を出す）。
-    // プールが空/枯渇していれば固定文にフォールバック。複数人相手は専用の固定文を使う
-    if (!isGroup) {
-      const llm = getCallout();
-      if (llm) { speak(llm); return; }
-    }
     const pool = isGroup ? GROUP_LINES[z] : LINES[z];
     speak(pool[Math.floor(Math.random() * pool.length)]);
   }
@@ -539,7 +544,6 @@ export default function App() {
 
   function handleStart() {
     setStarted(true);
-    refillCallouts(); // 呼び込みLLM文プールを裏で温めておく（最初の何回かは固定文、以降LLM文に）
     callOut("mid"); // 音声解放を兼ねた初回発話
     lastCall.current = performance.now();
     // 展示用: ブラウザのタブ・ブックマーク・URLバーを隠して「窓の中の別世界」への没入感を上げる。

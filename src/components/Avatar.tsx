@@ -70,6 +70,9 @@ export interface AvatarProps {
   // Playground手動デモ発火専用: idが変わるたびに、徘徊中でなくても即座に指定の目的地(窓/プラント)へ
   // 向かわせる（本番の自動抽選フローには乗らない。チラ見の"glance"手動発火と同じパターン）
   forceAnchorRef?: MutableRefObject<{ key: WanderAnchorKey; id: number } | null>;
+  // Playground手動デモ発火専用: 気づいた瞬間の体の向きを強制指定してから気づき演出を発火する
+  // （振り向き3パターンをそれぞれ単独でテストできるようにするため）
+  forceNoticeRef?: MutableRefObject<{ tier: "front" | "side" | "back"; id: number } | null>;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -191,6 +194,13 @@ const NOTICE_COOLDOWN_S = 8.0;      // 連続発火防止
 const NOTICE_SURPRISE_S = 0.45;     // 最初のこの秒数は surprised、その後 happy に切り替え
 const NOTICE_TURN_LERP = 0.16;      // 振り向きの速さ（通常の接近時より速くピボットさせ「ハッと振り向く」印象に）
 const NOTICE_GAZE_LERP = 0.2;       // 気づいた瞬間は視線を素早く来場者にロックする（普段は下記の緩やかな値）
+
+// 気づいた瞬間の体の向きによって振り向き方を3パターンに分ける（一律で同じ速度で正面へ回すと、
+// 「もう正面向いてる時」まで無駄に体を揺らしたり、「真後ろ向いてる時」の瞬間スピンが不自然だったため）
+const NOTICE_YAW_FRONT_MAX = Math.PI / 4.5;  // 約40°以内=もう大体こっち向いてる→体は回さず首の反応だけ
+const NOTICE_YAW_BACK_MIN = Math.PI * 0.78;  // 約140°以上=背中向き→通常より速く勢いよく振り向く
+const NOTICE_TURN_LERP_BACK = 0.28;          // 背中向きから気づいた時の振り向く速さ（通常より速い）
+const NOTICE_FRONT_PITCH = 0.14;             // 正面向きで気づいた時、首だけで見せる上目遣いの角度(ラジアン)
 const GAZE_LERP = 0.08;             // 通常時の視線追従の滑らかさ（0.06→0.08で少し「吸い付く」感）
 // 視線のサッケード（微小な揺らぎ）: 目標にピタッと固定すると人形っぽく死んで見えるので、
 // lookAtの目標に小さなランダムオフセットを不規則な間隔で乗せて「生きてる目」にする
@@ -243,7 +253,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -278,6 +288,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
   const wanderAnchor = useRef<WanderAnchorKey | null>(null);
   // Playgroundの強制デモ発火(forceAnchorRef)の連番。idが変わった時だけ新規トリガーとして扱う
   const lastForceAnchorId = useRef(0);
+  const lastForceNoticeId = useRef(0);
   const bodyYaw = useRef(0);
   // "head"はVRMのLookAt(視線追従)が毎フレーム上書きするため、代わりに"neck"を使う
   const neckBone = useRef<THREE.Object3D | null>(null);
@@ -299,6 +310,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
   // 「気づき」演出の状態管理
   const noticeUntil = useRef(0);        // この時刻まで気づき演出中
   const noticeStart = useRef(0);        // 演出開始時刻（surprised→happyの切替判定用）
+  const noticeStartYaw = useRef(0);     // 気づいた瞬間の体の向き(絶対値)。振り向き方の場合分けに使う
   const absentSince = useRef(0);        // 「不在」が始まった時刻（0=在席中）
   const noticeCooldownUntil = useRef(0);// 連続発火防止
   // 「チラ見」演出の状態管理（far距離での一瞬の首振り向き）
@@ -484,6 +496,23 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
       prevWanderWalking.current = true;
     }
 
+    // Playground手動デモ発火: 気づいた瞬間の体の向きを指定の角度に強制してから、
+    // 通常の気づき発火と全く同じ処理(noticeUntil等)を直接叩く。振り向き3パターンを
+    // 個別に呼べるようにするためのデバッグ専用経路（本番の自動発火フローは変更しない）
+    const forceNotice = forceNoticeRef?.current;
+    if (forceNotice && forceNotice.id !== lastForceNoticeId.current) {
+      lastForceNoticeId.current = forceNotice.id;
+      const testYaw = forceNotice.tier === "front" ? Math.PI / 9 // 約20°
+        : forceNotice.tier === "side" ? Math.PI / 2              // 90°
+        : Math.PI * 0.94;                                        // 約170°
+      bodyYaw.current = testYaw;
+      noticeUntil.current = t + NOTICE_DURATION_S;
+      noticeStart.current = t;
+      noticeStartYaw.current = testYaw;
+      noticeCooldownUntil.current = t + NOTICE_COOLDOWN_S;
+      triggerAction("beckon");
+    }
+
     // ジェスチャークリップの再生・重み計算（入り/抜けをフェード、終了したら自動停止）
     let isGesturing = false;
     if (activeGesture.current) {
@@ -558,6 +587,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
       ) {
         noticeUntil.current = t + NOTICE_DURATION_S;
         noticeStart.current = t;
+        noticeStartYaw.current = Math.abs(bodyYaw.current); // 気づいた瞬間どれだけそっぽを向いていたか（bodyYawは常に-π〜πに正規化済み）
         noticeCooldownUntil.current = t + NOTICE_COOLDOWN_S;
         triggerAction("beckon"); // ハッと気づいて「おいで」と手招き
       }
@@ -618,11 +648,22 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
       }
       vrm.scene.rotation.y = bodyYaw.current;
     } else if (noticing || beckoning) {
-      // 気づき/手招き中: その場に固まり、来場者(正面=yaw0)へ素早く振り向く。
+      // 気づき/手招き中: その場に固まり、来場者(正面=yaw0)へ振り向く。
       // 位置は更新せず“いま居る場所から呼び込む”（＝広い会場で人を見つけて手招きする呼び込み嬢の動き）。
-      // 手招みの腕モーションは後段のアーム処理が担当する
+      // 手招みの腕モーションは後段のアーム処理が担当する。
+      // 気づいた瞬間の体の向き(noticeStartYaw)で振り向き方を変える(一律だと不自然だったため):
+      //   もう大体正面(NOTICE_YAW_FRONT_MAX未満)→体は回さない(下の首ピッチで上目遣いだけ演出)
+      //   真後ろ(NOTICE_YAW_BACK_MIN以上)→通常より速く勢いよく振り向く
+      //   それ以外(横向き)→従来通りの速さで振り向く
       approach.current = lerp(approach.current, ZONE_APPROACH[zoneNow], APPROACH_LERP);
-      bodyYaw.current = lerpAngle(bodyYaw.current, 0, damp(NOTICE_TURN_LERP, delta));
+      const startYaw = noticeStartYaw.current;
+      if (startYaw >= NOTICE_YAW_FRONT_MAX) {
+        const turnLerp = startYaw >= NOTICE_YAW_BACK_MIN ? NOTICE_TURN_LERP_BACK : NOTICE_TURN_LERP;
+        bodyYaw.current = lerpAngle(bodyYaw.current, 0, damp(turnLerp, delta));
+      }
+      // startYaw < NOTICE_YAW_FRONT_MAX の時はbodyYawを動かさない(体を回さない)が、
+      // rotation.yへの反映自体は毎フレーム必要（Playgroundの強制発火で直前にbodyYawだけ
+      // 書き換えた場合、ここで反映しないと見た目の向きがフリーズしたまま更新されなかったため）
       vrm.scene.rotation.y = bodyYaw.current;
       isWalking = false;
     } else if (isGesturing) {
@@ -826,10 +867,14 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
       // 縦の傾き: nod/tilt(activeAction)がneck.xを使っている間は干渉しないよう手を出さない。
       // プラントでは見下ろす(+)、窓では見上げる(-)方向へagp.pitchだけ傾ける。それ以外は0へ戻す
       if (!activeAction.current) {
+        // もう正面向きで気づいた時(noticeStartYaw < NOTICE_YAW_FRONT_MAX)は、体を回さない代わりに
+        // 首だけ軽く上げて上目遣いにする(「気づいた」を伝える最小限の反応)
+        const noticingFront = noticing && noticeStartYaw.current < NOTICE_YAW_FRONT_MAX;
         const pitchTarget = anchorGazing
           ? (wanderAnchor.current === "plant" ? agp.pitch : -agp.pitch)
+          : noticingFront ? -NOTICE_FRONT_PITCH
           : 0;
-        const pitchLerp = anchorGazing ? damp(agp.turnLerp, delta) : NECK_FOLLOW_LERP;
+        const pitchLerp = anchorGazing || noticingFront ? damp(NOTICE_TURN_LERP, delta) : NECK_FOLLOW_LERP;
         neckBone.current.rotation.x = lerp(neckBone.current.rotation.x, pitchTarget, pitchLerp);
       }
     }

@@ -64,30 +64,6 @@ function isLikelyNoSpeech(text: string, segments: WhisperVerboseSegment[] | unde
   return segments.every((s) => (s.no_speech_prob ?? 0) >= threshold);
 }
 
-// 呼び込みの第一声(callout)をLLMで事前生成しておくためのプール設定。
-// トリガー時にLLMを待つと来場者が通り過ぎてしまうので、不在中などに裏でまとめて生成して
-// プールに貯めておき、来場者を検知した瞬間はプールから1つ取り出して即再生する（固定文の抽選と同じ速さ）。
-// プールが空/枯渇時は呼び出し側の固定文(LINES)にフォールバックする。
-const CALLOUT_POOL_TARGET = 6; // 1回の生成でこの数だけ作る
-const CALLOUT_POOL_MIN = 2;    // これを下回ったら裏で補充
-
-// LLMが返す行を1つの呼び込みセリフに整える（番号・箇条書き記号・引用符・末尾の余計な記号を除去）。
-// 生成失敗や変な整形になった行は呼び出し側でfilter(Boolean)して捨てる
-function cleanupCalloutLine(raw: string): string {
-  let s = raw.trim();
-  s = s.replace(/^\s*[0-9０-９]+[.．)）、。:：]\s*/, ""); // 先頭の「1. 」「1)」「３．」等（全角含む）
-  s = s.replace(/^\s*[-・*→]\s*/, "");             // 箇条書き記号
-  s = s.replace(/^["'「『]|["'」』]$/g, "").trim();  // 前後の引用符
-  // 顔文字・絵文字・末尾の記号が混ざったら軽く落とす（読み上げの邪魔になるため）
-  s = s.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "").trim();
-  if (s.length > 40) return ""; // 長すぎ＝指示に従えていない → 捨てる
-  // プロンプトで禁止しても稀に紛れる男っぽい荒い語尾（キャラの声と合わない）は保険で弾く
-  if (/だぜ|だぞ[！!。.]?$/.test(s)) return "";
-  // 同様に、レムは何も売っていないのに紛れ込みがちな露店・物売り風の呼び込み文言も保険で弾く
-  if (/安いよ|セール|お得|割引|激安/.test(s)) return "";
-  return s;
-}
-
 // 沈黙が続いたときレムから振る話題（LLMを呼ばず即再生。応答速度優先＆会話履歴を汚さない）
 const NUDGE_LINES = [
   "ねえ、黙っちゃったらさみしいって！なんか話してよ〜",
@@ -202,10 +178,6 @@ export function useConversation(
   }, []);
   // 相手が話している間の相槌(頷き)の最終発火時刻（連発防止）
   const lastListenNodRef = useRef(0);
-
-  // 呼び込み第一声のLLM事前生成プール
-  const calloutPoolRef = useRef<string[]>([]);
-  const calloutBusyRef = useRef(false);
 
   // ---- TTS ----
   const speakAivis = useCallback(async (text: string) => {
@@ -435,51 +407,6 @@ export function useConversation(
     lastInteractionRef.current = Date.now();
   }, [speakAivis, pushLog]);
 
-  // ---- 呼び込み第一声のLLM生成（会話履歴は汚さない一発リクエスト） ----
-  // プールが少なくなったら裏でまとめて補充する。時間帯だけ文脈として渡し、毎回違う言い回しにする。
-  // 会話用のchat()と違いstream:false・履歴なし（呼び込みは1文で完結し文脈も要らないため）。
-  const refillCallouts = useCallback(async () => {
-    if (calloutBusyRef.current) return;
-    if (calloutPoolRef.current.length >= CALLOUT_POOL_MIN) return;
-    calloutBusyRef.current = true;
-    const hour = new Date().getHours();
-    const tod = hour < 11 ? "午前" : hour < 15 ? "お昼" : hour < 18 ? "夕方" : "夜";
-    const prompt = `展示ブースの陽気な呼び込みキャラ「レム」として、通りすがりの来場者を思わず振り向かせる「第一声」を${CALLOUT_POOL_TARGET}個作って。
-レムはコンカフェ系の陽気な女の子キャラで、明るいタメ口・テンション高め。
-ここは技術系の展示ブースで、レムは何かを売っているわけではない（商品も値段もセールも一切ない）。
-やることは「あなたと話したい・こっちに来てほしい」と誘うことだけ。
-参考にする例（この路線・熱量で）: 「ねえねえ！そこのあなた、こっち来てよ〜！」「あっ、いま目が合ったよね？ちょっとだけいいよね？」
-禁止: 「安いよ」「セール」「お得」等の物売り・露店の呼び込み表現は絶対に使わない。「〜だぜ」「〜だぞ」等の男っぽい荒い語尾も使わない（「〜だよ」「〜じゃん」「〜てよ」等、可愛らしい語尾にする）。
-条件: それぞれ全く違う言い回し・各1文で15文字前後・絵文字や記号や番号は付けない・1行に1つずつ出力・セリフ本文だけ。今は${tod}。`;
-    try {
-      const res = await fetch(GROQ_CHAT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: GROQ_CHAT_MODEL,
-          messages: [{ role: "user", content: prompt }],
-          stream: false,
-          temperature: 1.15,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const content: string = data.choices?.[0]?.message?.content ?? "";
-        const lines = content.split("\n").map(cleanupCalloutLine).filter(Boolean);
-        if (lines.length) calloutPoolRef.current.push(...lines);
-      }
-    } catch { /* Groq不調/オフライン: 呼び出し側の固定文にフォールバックする */ }
-    calloutBusyRef.current = false;
-  }, []);
-
-  // プールから呼び込み第一声を1つ取り出す（無ければnull＝呼び出し側は固定文にフォールバック）。
-  // 取り出して残りが少なくなったら裏で補充を仕込む
-  const getCallout = useCallback((): string | null => {
-    const line = calloutPoolRef.current.shift() ?? null;
-    if (calloutPoolRef.current.length < CALLOUT_POOL_MIN) void refillCallouts();
-    return line;
-  }, [refillCallouts]);
-
   // ---- VAD ループ ----
   const startVadLoop = useCallback((analyser: AnalyserNode) => {
     const data = new Uint8Array(analyser.frequencyBinCount);
@@ -640,5 +567,5 @@ export function useConversation(
     setLog([]);
   }, []);
 
-  return { state, transcript, reply, log, startConversation, stopConversation, resetHistory, actionRef, getCallout, refillCallouts };
+  return { state, transcript, reply, log, startConversation, stopConversation, resetHistory, actionRef };
 }
