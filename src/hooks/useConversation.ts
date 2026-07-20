@@ -8,9 +8,11 @@ const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
 const GROQ_STT_MODEL = "whisper-large-v3";
 
 // 会場のWi-Fiが落ちる/Groqが不調な場合のフォールバック（完全ローカル）
-// 事前に `python stt_server.py`（.venv）とOllama(`ollama run gemma2`)を起動しておくこと
+// 事前に `python stt_server.py`（.venv）とOllama(`ollama run gemma4:e4b`)を起動しておくこと
+// gemma2(9B)から変更: gemma4のエッジ向け軽量版(4.5B相当)。日本語ベンチでgemma2より
+// 高精度かつ軽量、という報告があり、ローカルフォールバックの体感速度改善を狙って切替
 const OLLAMA_URL = "/ollama";
-const OLLAMA_MODEL = "gemma2";
+const OLLAMA_MODEL = "gemma4:e4b";
 const LOCAL_STT_URL = "/stt/transcribe";
 
 const AIVIS_URL = "http://localhost:10101";
@@ -361,6 +363,7 @@ export function useConversation(
               model: OLLAMA_MODEL,
               messages,
               stream: false,
+              think: false, // gemma4はデフォルトで思考過程(thinking)を長々生成し23秒級に遅くなるため無効化(1.4秒程度まで短縮)
             }),
             signal: abortRef.current.signal,
           });
