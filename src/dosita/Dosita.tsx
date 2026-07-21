@@ -120,7 +120,7 @@ export function Dosita() {
               expressionRef={expressionRef}
               actionRef={conv.actionRef}
               conversing={conv.state !== "idle"}
-              modelUrl="/avatar/dosita.vrm"
+              modelUrl="/avatar/%E3%81%A9%E3%81%97%E3%81%9F%E3%82%93.vrm"
             />
           </Suspense>
         </Canvas>
