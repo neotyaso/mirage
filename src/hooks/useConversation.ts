@@ -128,11 +128,18 @@ export function useConversation(
   // 返り値は「【いまの状況】」としてsystemメモに差し込まれ、レムが現実を踏まえた返しをできるようにする。
   // 履歴には積まないので毎ターン最新のものだけが渡る（蓄積しない）
   getContext?: () => string,
+  // 人格プロンプトの上書き。省略時は既定のレム人格。「どしたんモード」等、別ページで
+  // 同じ会話パイプラインを別人格として使い回すための拡張点（レム本体の呼び出し元は無指定のまま）
+  systemPrompt?: string,
 ) {
   // getContextはApp側で毎レンダー新しい関数になりうるので、refに退避してchat/startConversationの
   // 依存に入れない（入れると会話セットアップが作り直されてしまう）
   const getContextRef = useRef(getContext);
   getContextRef.current = getContext;
+  // 人格プロンプトの差し替え用ref。省略時は既定のレム人格(SYSTEM_PROMPT)のまま
+  // （別ページ「どしたんモード」用に、レム本体の呼び出し元は一切変えずに追加した拡張点）
+  const systemPromptRef = useRef(systemPrompt ?? SYSTEM_PROMPT);
+  systemPromptRef.current = systemPrompt ?? SYSTEM_PROMPT;
   const [state, setState] = useState<ConvState>("idle");
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
@@ -270,7 +277,7 @@ export function useConversation(
     // historyRefには積まないので毎ターン最新だけが渡り、蓄積しない
     const contextNote = getContextRef.current?.().trim();
     const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemPromptRef.current },
       ...historyRef.current,
     ];
     if (contextNote) {
