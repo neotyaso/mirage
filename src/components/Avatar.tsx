@@ -76,8 +76,9 @@ export interface AvatarProps {
   // 読み込むVRMファイルのパス。未指定ならレム本体のMODEL_URL(sample.vrm)を使う。
   // 「どしたんモード」等、別ページで別のアバターを表示するための拡張点
   modelUrl?: string;
-  // trueならリップシンク(口の開閉)を止める。マスク装着モデルは口を動かすと
-  // マスクのテクスチャが裂けて見えるため、「どしたんモード」で無効化する
+  // trueなら口が関わる表情(リップシンク/happy/surprised)を一切動かさない。
+  // マスク装着モデルは口を動かすとマスクのテクスチャが裂けて見えるため、
+  // 「どしたんモード」で無効化する(まばたきなど口以外の表情は生かす)
   disableLipSync?: boolean;
 }
 
@@ -1012,37 +1013,46 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         }
       }
 
-      // リップシンク（マスク装着モデルは口を動かすとテクスチャが裂けて見えるため無効化できる）
-      const vol = volumeRef?.current ?? 0;
-      // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
-      const target = disableLipSync ? 0 : speaking
-        ? (vol > 0 ? clamp01(vol * 1.4) : clamp01(0.2 + 0.6 * Math.abs(Math.sin(t * 16)) + 0.15 * (Math.random() - 0.5)))
-        : 0;
-      mouth.current = lerp(mouth.current, target, 0.35);
-      em.setValue("aa", mouth.current);
-
-      if (noticing) {
-        // 気づき演出中は来場者の表情に関係なく強制上書き:
-        // 最初のNOTICE_SURPRISE_S秒は「ハッ」と驚き、その後は「見つけた！」の笑顔にパッと切り替える
-        const nt = t - noticeStart.current;
-        const surprisePhase = nt < NOTICE_SURPRISE_S;
-        em.setValue("surprised", surprisePhase ? 0.9 : 0);
-        // 呼び込みセリフ発話中は口モーフ(aa)と競合するのでhappyを控えめに
-        em.setValue("happy", surprisePhase ? 0 : (speaking ? 0.5 : 0.9));
+      if (disableLipSync) {
+        // マスク装着モデルは口(や口を含むhappy/surprised等の複合表情)を動かすと
+        // テクスチャが裂けて見えるため、口に関わる表情は一切動かさない(まばたきのみ生かす)
+        mouth.current = 0;
+        em.setValue("aa", 0);
+        em.setValue("happy", 0);
+        em.setValue("surprised", 0);
       } else {
-        // 来場者の表情に共感：笑顔→happy、驚き→surprised（しきい値二値判定）。
-        // さらにLLM由来の「驚き」リアクション（相手がすごいことを言った時）を surprised に重ねる。
-        // LLM驚きは来場者の顔とは独立に出したいので expr が無くても効く
-        const expr = expressionRef?.current;
-        const smileOn = !!expr && expr.smile >= SMILE_THRESHOLD;
-        const visitorSurprised = !!expr && expr.surprised >= SURPRISED_THRESHOLD;
-        // LLM驚きリアクションのフェード（残り0.9秒で徐々に抜けて自然に戻す）
-        const reactSurprise = reactSurpriseUntil.current > t
-          ? Math.min(1, (reactSurpriseUntil.current - t) / 0.9)
+        // リップシンク
+        const vol = volumeRef?.current ?? 0;
+        // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
+        const target = speaking
+          ? (vol > 0 ? clamp01(vol * 1.4) : clamp01(0.2 + 0.6 * Math.abs(Math.sin(t * 16)) + 0.15 * (Math.random() - 0.5)))
           : 0;
-        // リップシンク中はhappyを控えめに（口モーフと競合するため）
-        em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
-        em.setValue("surprised", Math.max(visitorSurprised ? 0.8 : 0, reactSurprise * 0.9));
+        mouth.current = lerp(mouth.current, target, 0.35);
+        em.setValue("aa", mouth.current);
+
+        if (noticing) {
+          // 気づき演出中は来場者の表情に関係なく強制上書き:
+          // 最初のNOTICE_SURPRISE_S秒は「ハッ」と驚き、その後は「見つけた！」の笑顔にパッと切り替える
+          const nt = t - noticeStart.current;
+          const surprisePhase = nt < NOTICE_SURPRISE_S;
+          em.setValue("surprised", surprisePhase ? 0.9 : 0);
+          // 呼び込みセリフ発話中は口モーフ(aa)と競合するのでhappyを控えめに
+          em.setValue("happy", surprisePhase ? 0 : (speaking ? 0.5 : 0.9));
+        } else {
+          // 来場者の表情に共感：笑顔→happy、驚き→surprised（しきい値二値判定）。
+          // さらにLLM由来の「驚き」リアクション（相手がすごいことを言った時）を surprised に重ねる。
+          // LLM驚きは来場者の顔とは独立に出したいので expr が無くても効く
+          const expr = expressionRef?.current;
+          const smileOn = !!expr && expr.smile >= SMILE_THRESHOLD;
+          const visitorSurprised = !!expr && expr.surprised >= SURPRISED_THRESHOLD;
+          // LLM驚きリアクションのフェード（残り0.9秒で徐々に抜けて自然に戻す）
+          const reactSurprise = reactSurpriseUntil.current > t
+            ? Math.min(1, (reactSurpriseUntil.current - t) / 0.9)
+            : 0;
+          // リップシンク中はhappyを控えめに（口モーフと競合するため）
+          em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
+          em.setValue("surprised", Math.max(visitorSurprised ? 0.8 : 0, reactSurprise * 0.9));
+        }
       }
     }
 
