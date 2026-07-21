@@ -80,6 +80,10 @@ export interface AvatarProps {
   // マスク装着モデルは口を動かすとマスクのテクスチャが裂けて見えるため、
   // 「どしたんモード」で無効化する(まばたきなど口以外の表情は生かす)
   disableLipSync?: boolean;
+  // trueなら口の位置(neckボーンからの相対位置)に薄い黒パッチを追加する。
+  // マスクより口のポリゴンが手前に来て、閉じた口の線がマスク越しに透けて見えるため、
+  // その一点だけを覆って隠す(disableLipSyncとセットで使う想定)
+  hideMouthLine?: boolean;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -260,7 +264,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -353,6 +357,18 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         if (rElbow) rElbow.rotation.z =  0.15;
         gestureBones.current = { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder, rHand };
         neckBone.current = h?.getNormalizedBoneNode("neck") ?? null;
+
+        if (hideMouthLine && neckBone.current) {
+          // マスクより口のポリゴンが手前にあるため、口の位置だけ薄い黒パッチで覆う。
+          // headではなくneckに付けるのは、headはVRMのLookAtが毎フレーム上書きするため
+          // (↑309行目のコメント参照)、マスク本体を付けた時と同じ理由
+          const geo = new THREE.BoxGeometry(0.032, 0.02, 0.002);
+          const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
+          const patch = new THREE.Mesh(geo, mat);
+          patch.renderOrder = 999;
+          patch.position.set(0, 0.104, 0.088);
+          neckBone.current.add(patch);
+        }
 
         if (alive) setVrm(loaded);
         else VRMUtils.deepDispose(loaded.scene);
