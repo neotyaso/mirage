@@ -121,6 +121,7 @@ export function Dosita() {
               actionRef={conv.actionRef}
               conversing={conv.state !== "idle"}
               modelUrl="/avatar/%E3%81%A9%E3%81%97%E3%81%9F%E3%82%93.vrm"
+              disableLipSync
             />
           </Suspense>
         </Canvas>

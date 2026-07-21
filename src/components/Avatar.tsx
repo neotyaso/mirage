@@ -76,6 +76,9 @@ export interface AvatarProps {
   // 読み込むVRMファイルのパス。未指定ならレム本体のMODEL_URL(sample.vrm)を使う。
   // 「どしたんモード」等、別ページで別のアバターを表示するための拡張点
   modelUrl?: string;
+  // trueならリップシンク(口の開閉)を止める。マスク装着モデルは口を動かすと
+  // マスクのテクスチャが裂けて見えるため、「どしたんモード」で無効化する
+  disableLipSync?: boolean;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -256,7 +259,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -1009,10 +1012,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         }
       }
 
-      // リップシンク
+      // リップシンク（マスク装着モデルは口を動かすとテクスチャが裂けて見えるため無効化できる）
       const vol = volumeRef?.current ?? 0;
       // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
-      const target = speaking
+      const target = disableLipSync ? 0 : speaking
         ? (vol > 0 ? clamp01(vol * 1.4) : clamp01(0.2 + 0.6 * Math.abs(Math.sin(t * 16)) + 0.15 * (Math.random() - 0.5)))
         : 0;
       mouth.current = lerp(mouth.current, target, 0.35);
