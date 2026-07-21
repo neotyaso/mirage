@@ -73,6 +73,9 @@ export interface AvatarProps {
   // Playground手動デモ発火専用: 気づいた瞬間の体の向きを強制指定してから気づき演出を発火する
   // （振り向き3パターンをそれぞれ単独でテストできるようにするため）
   forceNoticeRef?: MutableRefObject<{ tier: "front" | "side" | "back"; id: number } | null>;
+  // 読み込むVRMファイルのパス。未指定ならレム本体のMODEL_URL(sample.vrm)を使う。
+  // 「どしたんモード」等、別ページで別のアバターを表示するための拡張点
+  modelUrl?: string;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -253,7 +256,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -323,7 +326,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
 
     let alive = true;
     loader.load(
-      MODEL_URL,
+      modelUrl ?? MODEL_URL,
       (gltf) => {
         const loaded = gltf.userData.vrm as VRM;
         if (loaded.meta?.metaVersion === "0") VRMUtils.rotateVRM0(loaded);
