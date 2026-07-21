@@ -309,6 +309,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
   const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
+  // 口隠しパッチ(hideMouthLine)への参照。nod中はneckのpitchをそのまま受けると
+  // 実際の口(headのlookAt補正で首ほど傾かない)とズレて口が覗くため、
+  // nod分だけ逆回転させて打ち消す
+  const mouthPatch = useRef<THREE.Object3D | null>(null);
   // 単発ジェスチャー(伸び)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
   const gestureMixers = useRef<Partial<Record<GestureTag, THREE.AnimationMixer>>>({});
   const gestureActions = useRef<Partial<Record<GestureTag, THREE.AnimationAction>>>({});
@@ -375,6 +379,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           patch.renderOrder = 999;
           patch.position.set(0, 0.104, 0.088);
           neckBone.current.add(patch);
+          mouthPatch.current = patch;
         }
 
         if (startSettled) {
@@ -585,12 +590,16 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           neckBone.current.rotation.x = 0;
           neckBone.current.rotation.z = 0;
         }
+        if (mouthPatch.current) mouthPatch.current.rotation.x = 0;
         activeAction.current = null;
       } else if (neckBone.current) {
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
         if (tag === "nod") {
           neckBone.current.rotation.x = wave * NOD_ANGLE;
+          // 実際の口はheadのlookAt補正で首ほど大きく傾かないため、パッチ側は
+          // neckの回転を打ち消して見た目上ほぼ水平を保つ
+          if (mouthPatch.current) mouthPatch.current.rotation.x = -wave * NOD_ANGLE;
         } else {
           neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }
