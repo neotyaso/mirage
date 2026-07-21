@@ -84,6 +84,10 @@ export interface AvatarProps {
   // マスクより口のポリゴンが手前に来て、閉じた口の線がマスク越しに透けて見えるため、
   // その一点だけを覆って隠す(disableLipSyncとセットで使う想定)
   hideMouthLine?: boolean;
+  // trueなら「奥から歩いて近づく」演出を飛ばし、最初から接近済みの位置に固定して表示する。
+  // 「どしたんモード」は机上アップ想定で歩かせる必要がなく、歩行中に口隠しパッチ等の
+  // 位置がずれて見える問題も避けられる
+  startSettled?: boolean;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -264,7 +268,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine, startSettled }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -362,12 +366,22 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           // マスクより口のポリゴンが手前にあるため、口の位置だけ薄い黒パッチで覆う。
           // headではなくneckに付けるのは、headはVRMのLookAtが毎フレーム上書きするため
           // (↑309行目のコメント参照)、マスク本体を付けた時と同じ理由
-          const geo = new THREE.BoxGeometry(0.032, 0.02, 0.002);
+          // 胸の横揺れアイドルモーション(SWAY_AMOUNT)でneck以下が継続的に揺れる一方、
+          // 顔メッシュ側のスキニングとは完全には一致せず口の線とパッチがズレて見えることが
+          // あったため、揺れの分の余裕を持たせて大きめに作る
+          const geo = new THREE.BoxGeometry(0.05, 0.035, 0.002);
           const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
           const patch = new THREE.Mesh(geo, mat);
           patch.renderOrder = 999;
           patch.position.set(0, 0.104, 0.088);
           neckBone.current.add(patch);
+        }
+
+        if (startSettled) {
+          // 奥から歩いて近づく演出をスキップし、最初から接近済みの位置に直接置く
+          approach.current = 1;
+          bodyYaw.current = 0;
+          loaded.scene.position.set(0, 0, APPROACH_Z_FRONT);
         }
 
         if (alive) setVrm(loaded);
