@@ -134,6 +134,8 @@ export function useConversation(
   // 沈黙が続いた時に話しかけるセリフ集の上書き。空配列を渡すと沈黙促し発話自体を無効化する。
   // 省略時は既定のNUDGE_LINES(レム口調)のまま
   nudgeLines?: string[],
+  // AivisSpeechの話者ID上書き。省略時は既定のSPEAKER_ID(レムの声)のまま
+  speakerId?: number,
 ) {
   // getContextはApp側で毎レンダー新しい関数になりうるので、refに退避してchat/startConversationの
   // 依存に入れない（入れると会話セットアップが作り直されてしまう）
@@ -146,6 +148,9 @@ export function useConversation(
   // 沈黙促しセリフの差し替え用ref。省略時は既定のNUDGE_LINES(レム口調)のまま
   const nudgeLinesRef = useRef(nudgeLines ?? NUDGE_LINES);
   nudgeLinesRef.current = nudgeLines ?? NUDGE_LINES;
+  // 話者IDの差し替え用ref。省略時は既定のSPEAKER_ID(レムの声)のまま
+  const speakerIdRef = useRef(speakerId ?? SPEAKER_ID);
+  speakerIdRef.current = speakerId ?? SPEAKER_ID;
   const [state, setState] = useState<ConvState>("idle");
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
@@ -183,14 +188,8 @@ export function useConversation(
   const lastInteractionRef = useRef(0); // 最後にやり取りがあった時刻（沈黙検知用）
   const activeSourceRef = useRef<{ stop: () => void; ctx: AudioContext } | null>(null);
   const ttsQueueRef = useRef<Promise<void>>(Promise.resolve()); // 文単位のTTSを順番に直列再生するキュー
-  // 自分が喋っている最中に相手が話し始めた（バージイン）ことを示すフラグ。
-  // chat()側で「割り込まれたので残りの文は読み上げない」判定に使う
-  const bargeInRef = useRef(false);
-  // 今のターンで実際に最後まで読み上げ終わった文だけを溜めるバッファ。
-  // バージインされた時、チャットログをLLM生成の全文ではなくここまでにする
-  const spokenTextRef = useRef("");
 
-  // 再生中の音声を止める（次の発話開始時、会話終了時、バージイン時の3箇所で使う共通処理）
+  // 再生中の音声を止める（次の発話開始時、会話終了時で使う共通処理）
   const interruptSpeech = useCallback(() => {
     if (activeSourceRef.current) {
       try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
@@ -214,19 +213,17 @@ export function useConversation(
 
   // ---- TTS ----
   const speakAivis = useCallback(async (text: string) => {
-    // バージインされた後にキューへ残っていた分（このターンの続きの文）は読み上げない。
-    // ttsQueueRef自体は既にチェーンされた再生予定を止められないため、ここで個別にガードする
-    if (bargeInRef.current) return;
     // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
     interruptSpeech();
     try {
+      const speaker = speakerIdRef.current;
       const qRes = await fetch(
-        `${AIVIS_URL}/audio_query?text=${encodeURIComponent(text)}&speaker=${SPEAKER_ID}`,
+        `${AIVIS_URL}/audio_query?text=${encodeURIComponent(text)}&speaker=${speaker}`,
         { method: "POST" },
       );
       if (!qRes.ok) throw new Error("audio_query failed");
       const query = await qRes.json();
-      const sRes = await fetch(`${AIVIS_URL}/synthesis?speaker=${SPEAKER_ID}`, {
+      const sRes = await fetch(`${AIVIS_URL}/synthesis?speaker=${speaker}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(query),
@@ -281,10 +278,7 @@ export function useConversation(
 
   // TTSキューに文を追加。前の文の再生が終わってから次を再生するので重ならない
   const enqueueSpeak = useCallback((text: string) => {
-    ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(text)).then(() => {
-      // バージインで割り込まれた文は最後まで聞こえていない可能性があるのでログには積まない
-      if (!bargeInRef.current) spokenTextRef.current += text;
-    });
+    ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(text));
   }, [speakAivis]);
 
   // ---- LLM（Groq, ストリーミング） ----
@@ -292,8 +286,6 @@ export function useConversation(
   // レムの返答は1〜2文なので「全文生成→TTS」より「1文目ができたらすぐ喋り出す」方が体感速度が大きく変わる
   const chat = useCallback(async (userText: string) => {
     busyRef.current = true;
-    bargeInRef.current = false; // 新しいターンなので前回の割り込みフラグをクリア
-    spokenTextRef.current = "";
     setState("thinking");
     historyRef.current.push({ role: "user", content: userText });
 
@@ -409,17 +401,6 @@ export function useConversation(
       }
     }
 
-    if (bargeInRef.current) {
-      // 割り込まれた: 生成された全文(full)ではなく、実際に読み上げ終わった分だけを
-      // チャットログ・履歴に残す。残りの文は読み上げない（相手の話を聞くのを優先）
-      await ttsQueueRef.current; // 直前の割り込み文のspokenTextRef反映を待つ
-      updateAssistantEntry(entryId, spokenTextRef.current);
-      setReply(spokenTextRef.current);
-      if (spokenTextRef.current) historyRef.current.push({ role: "assistant", content: spokenTextRef.current });
-      busyRef.current = false;
-      return;
-    }
-
     const rest = unspoken.trim();
     if (rest && activeRef.current) {
       setState("speaking");
@@ -437,7 +418,6 @@ export function useConversation(
   // 固定文を1つ読み上げるだけの発話（LLMを呼ばない）。「どしたんモード」で人を検知した瞬間の
   // 挨拶を毎回必ず同じ文言にする（LLM任せだとブレる・言わないことがあるため）用途に使う
   const announce = useCallback(async (text: string) => {
-    bargeInRef.current = false; // 直前のターンの割り込みフラグが残っているとspeakAivisで弾かれるため念のためクリア
     historyRef.current.push({ role: "assistant", content: text });
     setReply(text);
     pushLog("assistant", text);
@@ -452,7 +432,6 @@ export function useConversation(
     const pool = nudgeLinesRef.current;
     if (pool.length === 0) return; // 空配列＝沈黙促し発話を無効化
     busyRef.current = true;
-    bargeInRef.current = false; // 直前のターンの割り込みフラグが残っているとspeakAivisで弾かれるため念のためクリア
     setState("thinking");
     const line = pool[Math.floor(Math.random() * pool.length)];
     historyRef.current.push({ role: "assistant", content: line });
@@ -472,9 +451,8 @@ export function useConversation(
     function loop() {
       if (!activeRef.current) return;
 
-      // 考え中(STT/LLM生成待ち)はまだ声が出ていないので割り込み対象外、そのまま待つ。
-      // 喋っている最中(speakingRef)は下のバージイン判定のためにVADを止めない
-      if (busyRef.current && !speakingRef.current) {
+      // レムが喋ってる/考え中の間はVADを止める（二重録音・ログ重複防止）
+      if (speakingRef.current || busyRef.current) {
         vadRafRef.current = requestAnimationFrame(loop);
         return;
       }
@@ -484,14 +462,6 @@ export function useConversation(
       const now = Date.now();
 
       if (avg > SPEECH_THRESHOLD) {
-        if (speakingRef.current) {
-          // バージイン: 自分が話している最中に相手が話し始めたので、話すのをやめて聞く側に回る
-          bargeInRef.current = true;
-          abortRef.current?.abort();
-          interruptSpeech();
-          busyRef.current = false;
-          setState("listening");
-        }
         // 音声検知
         lastSpeechRef.current = now;
         lastInteractionRef.current = now;
@@ -531,7 +501,7 @@ export function useConversation(
       vadRafRef.current = requestAnimationFrame(loop);
     }
     loop();
-  }, [speakingRef, nudge, fireAction, interruptSpeech]);
+  }, [speakingRef, nudge, fireAction]);
 
   // ---- 会話モードON ----
   const startConversation = useCallback(async () => {

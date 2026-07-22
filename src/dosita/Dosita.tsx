@@ -82,7 +82,8 @@ export function Dosita() {
   const cam = useFaceDetection(started);
 
   // 沈黙促し発話(レムの固定セリフ)はどしはなでは不要なので空配列で無効化
-  const conv = useConversation(speakingRef, volumeRef, undefined, undefined, DOSITA_SYSTEM_PROMPT, []);
+  // AivisSpeechの声を「fumifumi」に変更(ノーマルスタイル)
+  const conv = useConversation(speakingRef, volumeRef, undefined, undefined, DOSITA_SYSTEM_PROMPT, [], 606865152);
   // 不在→在席に切り替わった瞬間だけ挨拶を1回発火するための直前フレーム値
   const wasPresentRef = useRef(false);
 
