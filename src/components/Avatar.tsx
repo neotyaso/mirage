@@ -90,6 +90,11 @@ export interface AvatarProps {
   // マスクより口のポリゴンが手前に来て、閉じた口の線がマスク越しに透けて見えるため、
   // その一点だけを覆って隠す(disableLipSyncとセットで使う想定)
   hideMouthLine?: boolean;
+  // 頷き(nod)でneckを倒す角度(ラジアン)。未指定ならNOD_ANGLE(0.35=約20°)。
+  // マスク装着モデルは大きく倒すほどheadのLookAt追従が追いつかず口元に隙間が
+  // 見えるため、「どしたんモード」では小さめの値を渡して首だけの控えめな
+  // 頷きにする
+  nodAngle?: number;
   // trueなら「奥から歩いて近づく」演出を飛ばし、最初から接近済みの位置に固定して表示する。
   // 「どしたんモード」は机上アップ想定で歩かせる必要がなく、歩行中に口隠しパッチ等の
   // 位置がずれて見える問題も避けられる
@@ -274,7 +279,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine, startSettled }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine, startSettled, nodAngle }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -601,7 +606,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
         if (tag === "nod") {
-          neckBone.current.rotation.x = wave * NOD_ANGLE;
+          neckBone.current.rotation.x = wave * (nodAngle ?? NOD_ANGLE);
         } else {
           neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }

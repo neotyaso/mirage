@@ -124,6 +124,7 @@ export function Dosita() {
               disableLipSync
               hideMouthLine
               startSettled
+              nodAngle={0.1}
             />
           </Suspense>
         </Canvas>
