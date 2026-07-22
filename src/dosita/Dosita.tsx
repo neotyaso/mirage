@@ -16,7 +16,7 @@ const DOSITA_SYSTEM_PROMPT = `
 【口調】
 - 関西弁ベースのタメ口（「〜やな」「〜せへんのに」「行こ？」など）
 - 一人称は「俺」、相手は「お前」と呼ぶ
--「俺お前のこと妹みたいに思ってるから」
+-「俺お前のこと妹みたいに思ってるから」と気まずそうな感じならしゃべる
 
 【会話の型（必ずこの5ステップで返す）】
 1. 相手の悩みや愚痴に対して「どしたん？話聞こか？」と優しく切り出す
@@ -209,12 +209,20 @@ export function Dosita() {
           頷きテスト
         </button>
       )}
+      {debugMode && (
+        <button
+          onClick={() => { window.location.href = "/index.html"; }}
+          style={{ position: "absolute", bottom: 12, left: 12, zIndex: 20, padding: "8px 14px", fontSize: 13, borderRadius: 6, border: "none", background: "rgba(255,106,213,0.85)", color: "#fff", cursor: "pointer" }}
+        >
+          レムモードへ
+        </button>
+      )}
     </div>
   );
 }
 
 const BG_GRADIENT =
-  "radial-gradient(ellipse 60% 50% at 50% 30%, #3d2f4d 0%, #2b2130 55%, #1c1622 100%)";
+  "radial-gradient(ellipse 70% 60% at 50% 30%, #ffffff 0%, #f6f5f8 55%, #ece9f0 100%)";
 
 const BOKEH_KEYFRAMES = `
 @keyframes dositaDrift1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(24px,-18px); } }
@@ -225,15 +233,15 @@ const BOKEH_KEYFRAMES = `
 // 机上のランプや窓明かりのような、ぼんやり滲む光の玉を3つ配置(位置と色だけ変えて寂しさを埋める)
 function bokehStyle(variant: 1 | 2 | 3): CSSProperties {
   const presets: Record<1 | 2 | 3, CSSProperties> = {
-    1: { top: "8%", left: "12%", width: 260, height: 260, background: "#6b5b95" },
-    2: { bottom: "6%", right: "10%", width: 320, height: 320, background: "#4c7fa6" },
-    3: { top: "42%", right: "22%", width: 180, height: 180, background: "#c98f5e" },
+    1: { top: "8%", left: "12%", width: 260, height: 260, background: "#c9bfe0" },
+    2: { bottom: "6%", right: "10%", width: 320, height: 320, background: "#bcd6e8" },
+    3: { top: "42%", right: "22%", width: 180, height: 180, background: "#f0d9c2" },
   };
   return {
     position: "absolute",
     borderRadius: "50%",
     filter: "blur(70px)",
-    opacity: 0.35,
+    opacity: 0.4,
     pointerEvents: "none",
     zIndex: 0,
     animation: `dositaDrift${variant} 14s ease-in-out infinite`,
@@ -244,7 +252,7 @@ function bokehStyle(variant: 1 | 2 | 3): CSSProperties {
 const vignetteStyle: CSSProperties = {
   position: "absolute",
   inset: 0,
-  background: "radial-gradient(ellipse 70% 65% at 50% 55%, transparent 55%, rgba(10,7,14,0.55) 100%)",
+  background: "radial-gradient(ellipse 70% 65% at 50% 55%, transparent 60%, rgba(150,140,160,0.18) 100%)",
   pointerEvents: "none",
   zIndex: 2,
 };

@@ -383,8 +383,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           // (↑309行目のコメント参照)、マスク本体を付けた時と同じ理由
           // 胸の横揺れアイドルモーション(SWAY_AMOUNT)や頷きでneck以下が揺れても
           // 口の線が隠れるよう少し余裕を持たせる(ただし大きすぎるとマスク上端から
-          // はみ出して肌の上に黒く見えてしまうため控えめに)
-          const geo = new THREE.BoxGeometry(0.036, 0.03, 0.002);
+          // はみ出して肌の上に黒く見えてしまうため控えめに)。
+          // カメラが斜めから見るため、薄い板だと側面から隙間が見えることがあるので
+          // Z方向にも厚みを持たせて角度が付いても覆えるようにする
+          const geo = new THREE.BoxGeometry(0.036, 0.03, 0.02);
           const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
           const patch = new THREE.Mesh(geo, mat);
           patch.renderOrder = 999;

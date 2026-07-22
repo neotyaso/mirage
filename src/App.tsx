@@ -681,6 +681,14 @@ export default function App() {
           </div>
         </div>
       )}
+      {debugMode && (
+        <button
+          onClick={() => { window.location.href = "/dosita.html"; }}
+          style={{ position: "absolute", bottom: 12, right: 12, zIndex: 20, padding: "8px 14px", fontSize: 13, borderRadius: 6, border: "none", background: "rgba(107,91,149,0.85)", color: "#fff", cursor: "pointer" }}
+        >
+          どしはなモードへ
+        </button>
+      )}
     </div>
   );
 }
