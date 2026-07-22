@@ -186,6 +186,9 @@ export function useConversation(
   // 自分が喋っている最中に相手が話し始めた（バージイン）ことを示すフラグ。
   // chat()側で「割り込まれたので残りの文は読み上げない」判定に使う
   const bargeInRef = useRef(false);
+  // 今のターンで実際に最後まで読み上げ終わった文だけを溜めるバッファ。
+  // バージインされた時、チャットログをLLM生成の全文ではなくここまでにする
+  const spokenTextRef = useRef("");
 
   // 再生中の音声を止める（次の発話開始時、会話終了時、バージイン時の3箇所で使う共通処理）
   const interruptSpeech = useCallback(() => {
@@ -211,6 +214,9 @@ export function useConversation(
 
   // ---- TTS ----
   const speakAivis = useCallback(async (text: string) => {
+    // バージインされた後にキューへ残っていた分（このターンの続きの文）は読み上げない。
+    // ttsQueueRef自体は既にチェーンされた再生予定を止められないため、ここで個別にガードする
+    if (bargeInRef.current) return;
     // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
     interruptSpeech();
     try {
@@ -275,7 +281,10 @@ export function useConversation(
 
   // TTSキューに文を追加。前の文の再生が終わってから次を再生するので重ならない
   const enqueueSpeak = useCallback((text: string) => {
-    ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(text));
+    ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(text)).then(() => {
+      // バージインで割り込まれた文は最後まで聞こえていない可能性があるのでログには積まない
+      if (!bargeInRef.current) spokenTextRef.current += text;
+    });
   }, [speakAivis]);
 
   // ---- LLM（Groq, ストリーミング） ----
@@ -284,6 +293,7 @@ export function useConversation(
   const chat = useCallback(async (userText: string) => {
     busyRef.current = true;
     bargeInRef.current = false; // 新しいターンなので前回の割り込みフラグをクリア
+    spokenTextRef.current = "";
     setState("thinking");
     historyRef.current.push({ role: "user", content: userText });
 
@@ -399,19 +409,27 @@ export function useConversation(
       }
     }
 
+    if (bargeInRef.current) {
+      // 割り込まれた: 生成された全文(full)ではなく、実際に読み上げ終わった分だけを
+      // チャットログ・履歴に残す。残りの文は読み上げない（相手の話を聞くのを優先）
+      await ttsQueueRef.current; // 直前の割り込み文のspokenTextRef反映を待つ
+      updateAssistantEntry(entryId, spokenTextRef.current);
+      setReply(spokenTextRef.current);
+      if (spokenTextRef.current) historyRef.current.push({ role: "assistant", content: spokenTextRef.current });
+      busyRef.current = false;
+      return;
+    }
+
     const rest = unspoken.trim();
-    // バージインされていたら、割り込まれた発話の残りは読み上げない（相手の話を聞くのを優先）
-    if (rest && activeRef.current && !bargeInRef.current) {
+    if (rest && activeRef.current) {
       setState("speaking");
       enqueueSpeak(rest);
     }
     if (full) historyRef.current.push({ role: "assistant", content: full });
 
-    if (!bargeInRef.current) {
-      await ttsQueueRef.current; // 全文の読み上げが終わるまで待つ
-      if (activeRef.current) setState("listening");
-      else setState("idle");
-    }
+    await ttsQueueRef.current; // 全文の読み上げが終わるまで待つ
+    if (activeRef.current) setState("listening");
+    else setState("idle");
     busyRef.current = false;
     lastInteractionRef.current = Date.now();
   }, [enqueueSpeak, startAssistantEntry, updateAssistantEntry]);
@@ -419,6 +437,7 @@ export function useConversation(
   // 固定文を1つ読み上げるだけの発話（LLMを呼ばない）。「どしたんモード」で人を検知した瞬間の
   // 挨拶を毎回必ず同じ文言にする（LLM任せだとブレる・言わないことがあるため）用途に使う
   const announce = useCallback(async (text: string) => {
+    bargeInRef.current = false; // 直前のターンの割り込みフラグが残っているとspeakAivisで弾かれるため念のためクリア
     historyRef.current.push({ role: "assistant", content: text });
     setReply(text);
     pushLog("assistant", text);
@@ -433,6 +452,7 @@ export function useConversation(
     const pool = nudgeLinesRef.current;
     if (pool.length === 0) return; // 空配列＝沈黙促し発話を無効化
     busyRef.current = true;
+    bargeInRef.current = false; // 直前のターンの割り込みフラグが残っているとspeakAivisで弾かれるため念のためクリア
     setState("thinking");
     const line = pool[Math.floor(Math.random() * pool.length)];
     historyRef.current.push({ role: "assistant", content: line });
