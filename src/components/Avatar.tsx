@@ -14,7 +14,7 @@ const WALK_URL = "/avatar/walk.vrma";
 // 口隠しパッチ(hideMouthLine)のneckボーン静止姿勢での基準オフセット。
 // neckが回転(nod等)している間は、この基準位置をneckの現在の回転で逆補正して
 // 位置・向きを維持する(単に子として乗せるだけだと回転の弧を描いてズレてしまうため)
-const MOUTH_PATCH_Y = 0.104;
+const MOUTH_PATCH_Y = 0.099;
 const MOUTH_PATCH_Z = 0.088;
 
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
@@ -381,10 +381,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           // マスクより口のポリゴンが手前にあるため、口の位置だけ薄い黒パッチで覆う。
           // headではなくneckに付けるのは、headはVRMのLookAtが毎フレーム上書きするため
           // (↑309行目のコメント参照)、マスク本体を付けた時と同じ理由
-          // 胸の横揺れアイドルモーション(SWAY_AMOUNT)でneck以下が継続的に揺れる一方、
-          // 顔メッシュ側のスキニングとは完全には一致せず口の線とパッチがズレて見えることが
-          // あったため、揺れの分の余裕を持たせて大きめに作る
-          const geo = new THREE.BoxGeometry(0.05, 0.035, 0.002);
+          // 胸の横揺れアイドルモーション(SWAY_AMOUNT)や頷きでneck以下が揺れても
+          // 口の線が隠れるよう少し余裕を持たせる(ただし大きすぎるとマスク上端から
+          // はみ出して肌の上に黒く見えてしまうため控えめに)
+          const geo = new THREE.BoxGeometry(0.036, 0.03, 0.002);
           const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
           const patch = new THREE.Mesh(geo, mat);
           patch.renderOrder = 999;
