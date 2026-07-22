@@ -399,6 +399,15 @@ export function useConversation(
     lastInteractionRef.current = Date.now();
   }, [enqueueSpeak, startAssistantEntry, updateAssistantEntry]);
 
+  // 固定文を1つ読み上げるだけの発話（LLMを呼ばない）。「どしたんモード」で人を検知した瞬間の
+  // 挨拶を毎回必ず同じ文言にする（LLM任せだとブレる・言わないことがあるため）用途に使う
+  const announce = useCallback(async (text: string) => {
+    historyRef.current.push({ role: "assistant", content: text });
+    setReply(text);
+    pushLog("assistant", text);
+    await speakAivis(text);
+  }, [speakAivis, pushLog]);
+
   // 沈黙が続いたときレム側から話題を振る
   // LLMは呼ばない: 応答待ちが発生すると沈黙がさらに伸びて逆効果な上、
   // 会話履歴の連続性が崩れてOllamaのプロンプトキャッシュが効かなくなり以降の応答も遅くなるため
@@ -577,5 +586,5 @@ export function useConversation(
     setLog([]);
   }, []);
 
-  return { state, transcript, reply, log, startConversation, stopConversation, resetHistory, actionRef };
+  return { state, transcript, reply, log, startConversation, stopConversation, resetHistory, actionRef, announce };
 }
