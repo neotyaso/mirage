@@ -160,6 +160,14 @@ export function Dosita() {
           {conv.state} | log: {conv.log.length}件 | {!started ? "停止中" : "稼働中"} | "d"で非表示
         </div>
       )}
+      {debugMode && started && (
+        <button
+          onClick={() => { conv.actionRef.current = { tag: "nod", id: Date.now() }; }}
+          style={{ position: "absolute", bottom: 12, right: 12, zIndex: 20, padding: "8px 14px", fontSize: 13, borderRadius: 6, border: "none", background: "rgba(139,92,246,0.85)", color: "#fff", cursor: "pointer" }}
+        >
+          頷きテスト
+        </button>
+      )}
     </div>
   );
 }
