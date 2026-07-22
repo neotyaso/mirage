@@ -11,6 +11,12 @@ import type { FaceCenter, FaceExpression, DistanceZone } from "../hooks/useFaceD
 const MODEL_URL = "/avatar/sample.vrm";
 const WALK_URL = "/avatar/walk.vrma";
 
+// 口隠しパッチ(hideMouthLine)のneckボーン静止姿勢での基準オフセット。
+// neckが回転(nod等)している間は、この基準位置をneckの現在の回転で逆補正して
+// 位置・向きを維持する(単に子として乗せるだけだと回転の弧を描いてズレてしまうため)
+const MOUTH_PATCH_Y = 0.104;
+const MOUTH_PATCH_Z = 0.088;
+
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
 // walkと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
 type GestureTag = "stretch";
@@ -377,7 +383,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
           const patch = new THREE.Mesh(geo, mat);
           patch.renderOrder = 999;
-          patch.position.set(0, 0.104, 0.088);
+          patch.position.set(0, MOUTH_PATCH_Y, MOUTH_PATCH_Z);
           neckBone.current.add(patch);
           mouthPatch.current = patch;
         }
@@ -590,16 +596,12 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           neckBone.current.rotation.x = 0;
           neckBone.current.rotation.z = 0;
         }
-        if (mouthPatch.current) mouthPatch.current.rotation.x = 0;
         activeAction.current = null;
       } else if (neckBone.current) {
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
         if (tag === "nod") {
           neckBone.current.rotation.x = wave * NOD_ANGLE;
-          // 実際の口はheadのlookAt補正で首ほど大きく傾かないため、パッチ側は
-          // neckの回転を打ち消して見た目上ほぼ水平を保つ
-          if (mouthPatch.current) mouthPatch.current.rotation.x = -wave * NOD_ANGLE;
         } else {
           neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }
@@ -1093,6 +1095,22 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           em.setValue("surprised", Math.max(visitorSurprised ? 0.8 : 0, reactSurprise * 0.9));
         }
       }
+    }
+
+    // 口隠しパッチ: neckの子として乗せているだけだと、neckが回転(nod等)した時に
+    // 基準位置が回転の弧を描いて動いてしまい、実際の口(headのlookAt補正であまり
+    // 傾かない)とズレて隙間が見えてしまう。neckの現在のpitchぶんだけ逆回転させた
+    // 位置・向きを毎フレーム計算し直すことで、回転量によらず一定の見た目を保つ
+    if (mouthPatch.current && neckBone.current) {
+      const a = -neckBone.current.rotation.x;
+      const cosA = Math.cos(a);
+      const sinA = Math.sin(a);
+      mouthPatch.current.position.set(
+        0,
+        MOUTH_PATCH_Y * cosA - MOUTH_PATCH_Z * sinA,
+        MOUTH_PATCH_Y * sinA + MOUTH_PATCH_Z * cosA
+      );
+      mouthPatch.current.rotation.x = a;
     }
 
     vrm.update(delta);
