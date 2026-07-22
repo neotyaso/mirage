@@ -387,7 +387,9 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           // カメラが斜めから見るため、薄い板だと側面から隙間が見えることがあるので
           // Z方向にも厚みを持たせて角度が付いても覆えるようにする
           const geo = new THREE.BoxGeometry(0.036, 0.03, 0.02);
-          const mat = new THREE.MeshBasicMaterial({ color: 0x14141a, depthTest: false });
+          // マスク本体と同じライティング応答の質感にして継ぎ目を目立たなくする
+          // (単色の非ライティング素材だと、寄りのカメラでは平坦な板が浮いて見えていた)
+          const mat = new THREE.MeshStandardMaterial({ color: 0x08080a, roughness: 1, metalness: 0, depthTest: false });
           const patch = new THREE.Mesh(geo, mat);
           patch.renderOrder = 999;
           patch.position.set(0, MOUTH_PATCH_Y, MOUTH_PATCH_Z);
