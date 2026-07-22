@@ -131,6 +131,9 @@ export function useConversation(
   // 人格プロンプトの上書き。省略時は既定のレム人格。「どしたんモード」等、別ページで
   // 同じ会話パイプラインを別人格として使い回すための拡張点（レム本体の呼び出し元は無指定のまま）
   systemPrompt?: string,
+  // 沈黙が続いた時に話しかけるセリフ集の上書き。空配列を渡すと沈黙促し発話自体を無効化する。
+  // 省略時は既定のNUDGE_LINES(レム口調)のまま
+  nudgeLines?: string[],
 ) {
   // getContextはApp側で毎レンダー新しい関数になりうるので、refに退避してchat/startConversationの
   // 依存に入れない（入れると会話セットアップが作り直されてしまう）
@@ -140,6 +143,9 @@ export function useConversation(
   // （別ページ「どしたんモード」用に、レム本体の呼び出し元は一切変えずに追加した拡張点）
   const systemPromptRef = useRef(systemPrompt ?? SYSTEM_PROMPT);
   systemPromptRef.current = systemPrompt ?? SYSTEM_PROMPT;
+  // 沈黙促しセリフの差し替え用ref。省略時は既定のNUDGE_LINES(レム口調)のまま
+  const nudgeLinesRef = useRef(nudgeLines ?? NUDGE_LINES);
+  nudgeLinesRef.current = nudgeLines ?? NUDGE_LINES;
   const [state, setState] = useState<ConvState>("idle");
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
@@ -177,6 +183,21 @@ export function useConversation(
   const lastInteractionRef = useRef(0); // 最後にやり取りがあった時刻（沈黙検知用）
   const activeSourceRef = useRef<{ stop: () => void; ctx: AudioContext } | null>(null);
   const ttsQueueRef = useRef<Promise<void>>(Promise.resolve()); // 文単位のTTSを順番に直列再生するキュー
+  // 自分が喋っている最中に相手が話し始めた（バージイン）ことを示すフラグ。
+  // chat()側で「割り込まれたので残りの文は読み上げない」判定に使う
+  const bargeInRef = useRef(false);
+
+  // 再生中の音声を止める（次の発話開始時、会話終了時、バージイン時の3箇所で使う共通処理）
+  const interruptSpeech = useCallback(() => {
+    if (activeSourceRef.current) {
+      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
+      activeSourceRef.current.ctx.close().catch(() => {});
+      activeSourceRef.current = null;
+    }
+    speechSynthesis.cancel();
+    speakingRef.current = false;
+    volumeRef.current = 0;
+  }, [speakingRef, volumeRef]);
 
   // 行動タグ: idはトリガーの度に増分し、Avatar側は「値が変わったら新規トリガー」として検知する
   // （同じtagが連続で来ても、参照が同一だとAvatar側で変化を検知できないため）
@@ -191,15 +212,7 @@ export function useConversation(
   // ---- TTS ----
   const speakAivis = useCallback(async (text: string) => {
     // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
-    if (activeSourceRef.current) {
-      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
-      activeSourceRef.current.ctx.close().catch(() => {});
-      activeSourceRef.current = null;
-    }
-    speechSynthesis.cancel();
-
-    speakingRef.current = false;
-    volumeRef.current = 0;
+    interruptSpeech();
     try {
       const qRes = await fetch(
         `${AIVIS_URL}/audio_query?text=${encodeURIComponent(text)}&speaker=${SPEAKER_ID}`,
@@ -258,7 +271,7 @@ export function useConversation(
         speechSynthesis.speak(u);
       });
     }
-  }, [speakingRef, volumeRef, panRef]);
+  }, [speakingRef, volumeRef, panRef, interruptSpeech]);
 
   // TTSキューに文を追加。前の文の再生が終わってから次を再生するので重ならない
   const enqueueSpeak = useCallback((text: string) => {
@@ -270,6 +283,7 @@ export function useConversation(
   // レムの返答は1〜2文なので「全文生成→TTS」より「1文目ができたらすぐ喋り出す」方が体感速度が大きく変わる
   const chat = useCallback(async (userText: string) => {
     busyRef.current = true;
+    bargeInRef.current = false; // 新しいターンなので前回の割り込みフラグをクリア
     setState("thinking");
     historyRef.current.push({ role: "user", content: userText });
 
@@ -386,15 +400,18 @@ export function useConversation(
     }
 
     const rest = unspoken.trim();
-    if (rest && activeRef.current) {
+    // バージインされていたら、割り込まれた発話の残りは読み上げない（相手の話を聞くのを優先）
+    if (rest && activeRef.current && !bargeInRef.current) {
       setState("speaking");
       enqueueSpeak(rest);
     }
     if (full) historyRef.current.push({ role: "assistant", content: full });
 
-    await ttsQueueRef.current; // 全文の読み上げが終わるまで待つ
-    if (activeRef.current) setState("listening");
-    else setState("idle");
+    if (!bargeInRef.current) {
+      await ttsQueueRef.current; // 全文の読み上げが終わるまで待つ
+      if (activeRef.current) setState("listening");
+      else setState("idle");
+    }
     busyRef.current = false;
     lastInteractionRef.current = Date.now();
   }, [enqueueSpeak, startAssistantEntry, updateAssistantEntry]);
@@ -413,9 +430,11 @@ export function useConversation(
   // 会話履歴の連続性が崩れてOllamaのプロンプトキャッシュが効かなくなり以降の応答も遅くなるため
   const nudge = useCallback(async () => {
     if (!activeRef.current || busyRef.current) return;
+    const pool = nudgeLinesRef.current;
+    if (pool.length === 0) return; // 空配列＝沈黙促し発話を無効化
     busyRef.current = true;
     setState("thinking");
-    const line = NUDGE_LINES[Math.floor(Math.random() * NUDGE_LINES.length)];
+    const line = pool[Math.floor(Math.random() * pool.length)];
     historyRef.current.push({ role: "assistant", content: line });
     setReply(line);
     pushLog("assistant", line);
@@ -433,8 +452,9 @@ export function useConversation(
     function loop() {
       if (!activeRef.current) return;
 
-      // レムが喋ってる/考え中の間はVADを止める（二重録音・ログ重複防止）
-      if (speakingRef.current || busyRef.current) {
+      // 考え中(STT/LLM生成待ち)はまだ声が出ていないので割り込み対象外、そのまま待つ。
+      // 喋っている最中(speakingRef)は下のバージイン判定のためにVADを止めない
+      if (busyRef.current && !speakingRef.current) {
         vadRafRef.current = requestAnimationFrame(loop);
         return;
       }
@@ -444,6 +464,14 @@ export function useConversation(
       const now = Date.now();
 
       if (avg > SPEECH_THRESHOLD) {
+        if (speakingRef.current) {
+          // バージイン: 自分が話している最中に相手が話し始めたので、話すのをやめて聞く側に回る
+          bargeInRef.current = true;
+          abortRef.current?.abort();
+          interruptSpeech();
+          busyRef.current = false;
+          setState("listening");
+        }
         // 音声検知
         lastSpeechRef.current = now;
         lastInteractionRef.current = now;
@@ -483,7 +511,7 @@ export function useConversation(
       vadRafRef.current = requestAnimationFrame(loop);
     }
     loop();
-  }, [speakingRef, nudge, fireAction]);
+  }, [speakingRef, nudge, fireAction, interruptSpeech]);
 
   // ---- 会話モードON ----
   const startConversation = useCallback(async () => {
@@ -565,19 +593,12 @@ export function useConversation(
     recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     audioCtxRef.current?.close();
-    speechSynthesis.cancel();
-    if (activeSourceRef.current) {
-      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
-      activeSourceRef.current.ctx.close().catch(() => {});
-      activeSourceRef.current = null;
-    }
+    interruptSpeech();
     ttsQueueRef.current = Promise.resolve(); // 溜まっていた再生キューも破棄
-    speakingRef.current = false;
-    volumeRef.current = 0;
     isSpeechRef.current = false;
     busyRef.current = false;
     setState("idle");
-  }, [speakingRef, volumeRef]);
+  }, [interruptSpeech]);
 
   const resetHistory = useCallback(() => {
     historyRef.current = [];
