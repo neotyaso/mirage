@@ -14,7 +14,7 @@ const WALK_URL = "/avatar/walk.vrma";
 // 口隠しパッチ(hideMouthLine)のneckボーン静止姿勢での基準オフセット。
 // neckが回転(nod等)している間は、この基準位置をneckの現在の回転で逆補正して
 // 位置・向きを維持する(単に子として乗せるだけだと回転の弧を描いてズレてしまうため)
-const MOUTH_PATCH_Y = 0.099;
+const MOUTH_PATCH_Y = 0.09;
 const MOUTH_PATCH_Z = 0.088;
 
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
@@ -386,7 +386,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
           // はみ出して肌の上に黒く見えてしまうため控えめに)。
           // カメラが斜めから見るため、薄い板だと側面から隙間が見えることがあるので
           // Z方向にも厚みを持たせて角度が付いても覆えるようにする
-          const geo = new THREE.BoxGeometry(0.036, 0.03, 0.02);
+          const geo = new THREE.BoxGeometry(0.036, 0.04, 0.02);
           // マスク本体と同じライティング応答の質感にして継ぎ目を目立たなくする
           // (単色の非ライティング素材だと、寄りのカメラでは平坦な板が浮いて見えていた)
           const mat = new THREE.MeshStandardMaterial({ color: 0x08080a, roughness: 1, metalness: 0, depthTest: false });
