@@ -47,6 +47,9 @@ const CAMERA_LOOK_AT: [number, number, number] = [0, 1.45, 0.35];
 // 正面(0°)ではなく斜めから見せるための角度。lookAt先を中心に、元の正面距離(0.75)を保ったまま振る
 const CAMERA_ANGLE_DEG = 30;
 const CAMERA_DIST = 0.75;
+// FOVを広げて縦方向の写る範囲を増やし、頭頂部が画面内に収まる＆全体がやや下寄りに
+// 見えるようにする(狭いFOVだと近距離では頭頂部が画面上端で見切れてしまうため)
+const CAMERA_FOV = 50;
 const CAMERA_ANGLE_RAD = (CAMERA_ANGLE_DEG * Math.PI) / 180;
 const CAMERA_POS: [number, number, number] = [
   CAMERA_LOOK_AT[0] + CAMERA_DIST * Math.sin(CAMERA_ANGLE_RAD),
@@ -135,7 +138,10 @@ export function Dosita() {
 
       {!started ? (
         <button
-          onClick={() => setStarted(true)}
+          onClick={() => {
+            setStarted(true);
+            document.documentElement.requestFullscreen?.().catch(() => {});
+          }}
           style={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
             padding: "16px 32px", fontSize: 18, borderRadius: 10, border: "none",
@@ -146,7 +152,7 @@ export function Dosita() {
           どしたん、話聞こか
         </button>
       ) : (
-        <Canvas camera={{ position: CAMERA_POS, fov: 30 }} gl={{ alpha: true }} style={{ position: "relative", zIndex: 1 }}>
+        <Canvas camera={{ position: CAMERA_POS, fov: CAMERA_FOV }} gl={{ alpha: true }} style={{ position: "relative", zIndex: 1 }}>
           <CameraRig />
           <ambientLight intensity={0.85} />
           <directionalLight position={[1, 2, 2]} intensity={1.1} color="#e8d9c8" />
@@ -222,7 +228,7 @@ export function Dosita() {
 }
 
 const BG_GRADIENT =
-  "radial-gradient(ellipse 70% 60% at 50% 30%, #ffffff 0%, #f6f5f8 55%, #ece9f0 100%)";
+  "radial-gradient(ellipse 70% 60% at 50% 30%, #fbf4e6 0%, #f3e6cf 55%, #e8d5b5 100%)";
 
 const BOKEH_KEYFRAMES = `
 @keyframes dositaDrift1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(24px,-18px); } }
@@ -233,15 +239,15 @@ const BOKEH_KEYFRAMES = `
 // 机上のランプや窓明かりのような、ぼんやり滲む光の玉を3つ配置(位置と色だけ変えて寂しさを埋める)
 function bokehStyle(variant: 1 | 2 | 3): CSSProperties {
   const presets: Record<1 | 2 | 3, CSSProperties> = {
-    1: { top: "8%", left: "12%", width: 260, height: 260, background: "#c9bfe0" },
-    2: { bottom: "6%", right: "10%", width: 320, height: 320, background: "#bcd6e8" },
-    3: { top: "42%", right: "22%", width: 180, height: 180, background: "#f0d9c2" },
+    1: { top: "8%", left: "12%", width: 260, height: 260, background: "#d9a679" },
+    2: { bottom: "6%", right: "10%", width: 320, height: 320, background: "#a8b89a" },
+    3: { top: "42%", right: "22%", width: 180, height: 180, background: "#c98f7a" },
   };
   return {
     position: "absolute",
     borderRadius: "50%",
     filter: "blur(70px)",
-    opacity: 0.4,
+    opacity: 0.32,
     pointerEvents: "none",
     zIndex: 0,
     animation: `dositaDrift${variant} 14s ease-in-out infinite`,
@@ -252,7 +258,7 @@ function bokehStyle(variant: 1 | 2 | 3): CSSProperties {
 const vignetteStyle: CSSProperties = {
   position: "absolute",
   inset: 0,
-  background: "radial-gradient(ellipse 70% 65% at 50% 55%, transparent 60%, rgba(150,140,160,0.18) 100%)",
+  background: "radial-gradient(ellipse 70% 65% at 50% 55%, transparent 60%, rgba(120,90,55,0.16) 100%)",
   pointerEvents: "none",
   zIndex: 2,
 };
