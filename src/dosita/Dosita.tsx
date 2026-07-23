@@ -41,7 +41,7 @@ const DOSITA_SYSTEM_PROMPT = `
 
 【会話】単発の質問返しで終わらせない。相手が前に言ったこと（名前・悩み・出来事等）を覚えていて、後から自然に触れる。オウム返しや同じ相槌の連発はしない。相手の発言は音声認識なので誤変換前提でノリよく意図を汲む。
 
-【出力ルール】返答は1〜2文だけ。絵文字・記号・カッコ書き禁止（下記の行動タグのみ例外）。
+【出力ルール】返答は1〜2文だけ。絵文字・記号・カッコ書き禁止（下記の行動タグのみ例外）。日本語（ひらがな・カタカナ・漢字）以外の言語の単語は絶対に混ぜない。
 
 【行動タグ】反応を表したい時だけ文頭に付けてよい（任意・多用しない）。[nod]=うなずいて相槌、[surprise]=相手の話に少し驚く。タグは読み上げられず動きに変換される。
 `;
@@ -97,20 +97,37 @@ export function Dosita() {
   const conv = useConversation(speakingRef, volumeRef, undefined, undefined, DOSITA_SYSTEM_PROMPT, [], 606865152);
   // 不在→在席に切り替わった瞬間だけ挨拶を1回発火するための直前フレーム値
   const wasPresentRef = useRef(false);
+  // useFaceDetection内部の不在判定(600ms)は「一瞬顔をそらした」程度の揺らぎ用で、
+  // カメラの物理的な抜き差しのような数秒単位の瞬断には対応していない。それをそのまま
+  // 「不在→在席」として扱うと、挿し直すたびに挨拶が再生・会話履歴がリセットされてしまうため、
+  // ここではさらに長い猶予を設け、この時間以上連続で不在が続いた場合だけ「本当にいなくなった」とみなす
+  const ABSENCE_CONFIRM_MS = 5000;
+  const absentSinceRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!started) return;
     const id = setInterval(() => {
       const isPresent = cam.presentRef.current;
       setPresent(isPresent);
+      const now = Date.now();
+      if (isPresent) {
+        absentSinceRef.current = null;
+      } else if (absentSinceRef.current === null) {
+        absentSinceRef.current = now;
+      }
+      const confirmedAbsent = !isPresent && absentSinceRef.current !== null
+        && now - absentSinceRef.current >= ABSENCE_CONFIRM_MS;
+
       if (isPresent && !wasPresentRef.current) {
         // 人を認識した瞬間の挨拶はLLM任せにせず、必ず同じ固定文で言う
         conv.announce(GREETING_LINE);
       }
-      wasPresentRef.current = isPresent;
+      if (isPresent) wasPresentRef.current = true;
+      else if (confirmedAbsent) wasPresentRef.current = false;
+
       if (isPresent && conv.state === "idle") {
         conv.startConversation();
-      } else if (!isPresent && conv.state !== "idle") {
+      } else if (confirmedAbsent && conv.state !== "idle") {
         conv.stopConversation();
         conv.resetHistory();
       }
