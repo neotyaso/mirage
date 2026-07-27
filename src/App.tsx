@@ -11,6 +11,8 @@ import { generateVisionComment } from "./vision/visionComment";
 import { useFaceDetection, getDistanceZone, ZONE_THRESHOLDS, adjustZoneThreshold, resetZoneThresholds } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
+import { createInitialInteractionState, transitionInteraction } from "./state/interactionMachine";
+import type { InteractionEvent, InteractionTransition } from "./state/interactionMachine";
 import type { MutableRefObject } from "react";
 
 // Off-axis カメラ: 来場者の顔位置でカメラが動き「3Dの窓」効果を生む
@@ -97,6 +99,11 @@ const COOLDOWN: Record<Exclude<DistanceZone, "absent">, number> = {
 // （放置しすぎると遠くの通行人を完全に無視することになるための保険。呼び込み自体は展示の
 // 核なので、farで無音のままにするのは誤りだった＝一度削除して復元した経緯あり）
 const GREET_FALLBACK_MS = 4000;
+const AWAY_TIMEOUT_MS = 4000; // これだけ不在が続いたら「離れた」と判断（顔検出の一瞬の途切れで切れないように）
+const INTERACTION_MACHINE_CONFIG = {
+  greetFallbackMs: GREET_FALLBACK_MS,
+  awayTimeoutMs: AWAY_TIMEOUT_MS,
+};
 
 // 会話モードが始まった瞬間に必ず言う一言。会話開始後はレムは黙って聞く設計なので、
 // これが無いと来場者から「近づいたのに何も起きない」ように見えてしまう
@@ -195,7 +202,20 @@ export default function App() {
   const [zone, setZone] = useState<DistanceZone>("absent");
   const [debugMode, setDebugMode] = useState(false); // 展示本番では隠す。"d"キーで表示切り替え
   const [curFaceSize, setCurFaceSize] = useState(0); // HUD表示用の現在の顔幅（閾値合わせの目安）。
+  const [interaction, setInteraction] = useState(createInitialInteractionState);
+  const interactionRef = useRef(interaction);
   // このstateが150ms間隔で更新されることで、下のキー操作による閾値変更もHUDに追従表示される
+
+  const dispatchInteraction = useCallback((event: InteractionEvent): InteractionTransition => {
+    const transition = transitionInteraction(interactionRef.current, event, INTERACTION_MACHINE_CONFIG);
+    interactionRef.current = transition.state;
+    setInteraction(transition.state);
+    return transition;
+  }, []);
+
+  useEffect(() => {
+    dispatchInteraction({ type: "CONVERSATION_STATE_CHANGED", state: convState });
+  }, [convState, dispatchInteraction]);
 
   // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え。
   // 加えて、展示当日に会場で人が通る距離へ距離ゾーン閾値をその場で合わせるためのキー操作:
@@ -357,7 +377,6 @@ export default function App() {
   const wasPresent = useRef(false);
   // mid/nearまで近づいたら自動で会話モードON。離れたら自動でOFF＋次の来場者のため履歴リセット
   const lastPresentAtRef = useRef(performance.now());
-  const AWAY_TIMEOUT_MS = 4000; // これだけ不在が続いたら「離れた」と判断（顔検出の一瞬の途切れで切れないように）
   // 会話中に相手の顔検出が一瞬途切れて自動リセットされた直後の復帰では、
   // 「新規来場者」扱いの呼び込みセリフを鳴らさず静かに会話を再開する（2人目が現れて一瞬顔が隠れた時などに
   // 「ねえねえ話していかない？」が会話に割り込む不自然さを防ぐ）
@@ -368,7 +387,6 @@ export default function App() {
   // 視線を外すと構う: そっぽを向いた継続時間とクールダウンの管理
   const lookAwaySinceRef = useRef(0);
   const lastLookAwayCallRef = useRef(0);
-  const lookAwayStreakRef = useRef(0); // 今回の来場でのエスカレーション段階（新規来場でリセット）
   // プロクセミクス反応: 直前のfaceSize/時刻を保持し、変化速度から急接近を検知
   const prevFaceSizeRef = useRef(0);
   const prevFaceSizeAtRef = useRef(0);
@@ -394,6 +412,7 @@ export default function App() {
       setFaces(faceCountRef.current);
       setZone(z);
       setCurFaceSize(faceSizeRef.current);
+      dispatchInteraction({ type: "FACE_UPDATED", zone: z, present: p, nowMs: performance.now() });
 
       // 空間オーディオ: 来場者の画面上の左右位置に合わせて声のパンを更新（OffAxisCameraと同じ符号規則）
       const fc = faceCenterRef.current;
@@ -430,7 +449,6 @@ export default function App() {
           // 不在→在 の瞬間、新規来場者としてリセット
           const isNewArrival = !wasPresent.current;
           if (isNewArrival) {
-            lookAwayStreakRef.current = 0; // 食い下がり演出のエスカレーションをリセット
             hasGreetedRef.current = false;
             firstSeenAtRef.current = now;
           }
@@ -503,11 +521,11 @@ export default function App() {
           now - lookAwaySinceRef.current > LOOK_AWAY_SUSTAIN_MS &&
           now - lastLookAwayCallRef.current > LOOK_AWAY_COOLDOWN_MS
         ) {
-          const tier = LOOK_AWAY_LINES_TIERED[Math.min(lookAwayStreakRef.current, LOOK_AWAY_LINES_TIERED.length - 1)];
+          const tier = LOOK_AWAY_LINES_TIERED[Math.min(interactionRef.current.lookAwayStreak, LOOK_AWAY_LINES_TIERED.length - 1)];
           speak(tier[Math.floor(Math.random() * tier.length)]);
           lastLookAwayCallRef.current = now;
           lookAwaySinceRef.current = 0;
-          lookAwayStreakRef.current += 1;
+          dispatchInteraction({ type: "LOOK_AWAY_REACTION_FIRED" });
         }
       } else {
         lookAwaySinceRef.current = 0;
@@ -544,6 +562,7 @@ export default function App() {
 
   function handleStart() {
     setStarted(true);
+    dispatchInteraction({ type: "APP_STARTED" });
     callOut("mid"); // 音声解放を兼ねた初回発話
     lastCall.current = performance.now();
     // 展示用: ブラウザのタブ・ブックマーク・URLバーを隠して「窓の中の別世界」への没入感を上げる。
@@ -631,8 +650,10 @@ export default function App() {
             onClick={() => {
               if (paused) {
                 setPaused(false);
+                dispatchInteraction({ type: "APP_RESUMED" });
               } else {
                 setPaused(true);
+                dispatchInteraction({ type: "APP_PAUSED" });
                 speechSynthesis.cancel();
                 // 呼び込み/驚き等のセリフ(speak())がAivisSpeechで再生中の場合、
                 // stopConversation()はuseConversation側の音声しか止めないため、
@@ -678,6 +699,9 @@ export default function App() {
           </div>
           <div style={{ marginTop: 2, opacity: 0.85 }}>
             size: {curFaceSize.toFixed(3)} | far境界(←→): {ZONE_THRESHOLDS.far.toFixed(3)} | near境界(↑↓): {ZONE_THRESHOLDS.mid.toFixed(3)} | 0=リセット
+          </div>
+          <div style={{ marginTop: 2, opacity: 0.85 }}>
+            machine: {interaction.runtime} | phase: {interaction.visitorPhase} | attn: {interaction.attention} | greet: {interaction.greeting} | mconv: {interaction.conversation} | sid: {interaction.sessionId} | lookAway: {interaction.lookAwayStreak}
           </div>
         </div>
       )}
