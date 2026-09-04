@@ -7,8 +7,8 @@
 // キーは vite.config.ts の /groq プロキシがサーバー側で付与するのでここには出てこない。
 // GROQ_CHAT_URL は useConversation.ts と同じエンドポイント（OpenAI互換 chat/completions）。
 const GROQ_CHAT_URL = "/groq/openai/v1/chat/completions";
-// マルチモーダル対応モデル（Groq。画像入力可・128Kコンテキスト。プレビュー扱い）
-const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// マルチモーダル対応の現行Groqモデル。会話モデルと合わせて運用する。
+const GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
 
 // コメントできる要素が無い/人がちゃんと写っていない時にモデルに返させる合図。
 // これが返ったら「言わない」（外した薄いコメントを無理に喋らせない＝確信度ガード）
@@ -57,6 +57,7 @@ export async function generateVisionComment(video: HTMLVideoElement | null): Pro
           },
         ],
         stream: false,
+        reasoning_effort: "none",
         temperature: 0.9,
         max_tokens: 60,
       }),

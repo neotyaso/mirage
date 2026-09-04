@@ -146,7 +146,17 @@ Use this as the minimum regression check before larger refactors.
 
 ## Health Check Targets
 
-These checks should become a single script in the next engineering phase.
+Run the combined health check:
+
+```bash
+pnpm health
+```
+
+It checks the frontend on fixed port `5173`, the Groq proxy, local STT,
+AivisSpeech, and Ollama. Camera and microphone permissions must still be
+confirmed in the browser.
+
+Individual checks:
 
 ```bash
 curl -s http://localhost:10101/speakers >/dev/null

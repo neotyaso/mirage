@@ -10,6 +10,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       host: true,
+      port: 5173,
+      // 展示端末のURLを固定する。使用中なら別ポートへ逃げず、明確に失敗させる。
+      strictPort: true,
       proxy: {
         "/ollama": {
           target: "http://localhost:11434",
