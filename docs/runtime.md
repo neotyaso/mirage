@@ -294,7 +294,6 @@ In main app:
 Routes/pages:
 - `/` main app.
 - `/playground.html` avatar and interaction tuning.
-- `/dosita.html` alternate mode.
 
 ## Minimum Manual Regression Checklist
 
