@@ -1,0 +1,11 @@
+moshi
+torch
+fastapi
+uvicorn[standard]
+websockets
+sounddevice
+numpy
+pynvml
+pyyaml
+pytest
+pytest-asyncio

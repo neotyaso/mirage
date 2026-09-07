@@ -1144,3 +1144,295 @@ TripoSR/SF3D等のコードは`torch.cuda.is_available()`しか見ておらずMP
 `tools/img3d/`にあった内容（pyproject.tomlのMac向け修正、`to_gradio_3d_orientation`の向き補正）はMac専用の一時対応だった。ディレクトリごと削除済み。Windows機で再開する場合は元のrepoの構成（Linux/CUDA前提）にほぼ近いので、そのまま`uv sync`で通る可能性が高い。
 
 `tools/img3d/`の内容（pyproject.tomlのMac向け修正、`to_gradio_3d_orientation`の向き補正）はMac専用の一時対応。Windows機でやる場合は元のrepoの構成（Linux/CUDA前提）にほぼ近いので、そのまま`uv sync`で通る可能性が高い。
+
+Mirageの今後の方向性まとめ
+1. 基本方針
+Mirageは「AIモデルの研究」そのものを目的にするのではなく、
+AIキャラクターが3D空間の中で、ユーザーとリアルタイムに会話し、自分で身体を動かし、行動するアプリケーション
+
+として作っていく。
+つまり、
+AI研究プロジェクト → AIを組み込んだ3Dリアルタイムアプリ
+という位置付け。
+2. 音声会話
+現在のMirageは、
+ユーザーの音声
+ ↓
+STT
+ ↓
+LLM
+ ↓
+TTS
+ ↓
+キャラクターが発話
+という構成。
+これを将来的には、
+ユーザー
+ ↓↑
+リアルタイム音声AI
+ ↓↑
+Mirage
+というFull Duplex / Speech-to-Speechに近い会話へ進化させたい。
+理想は、
+ユーザーが話す
+→ Mirageがすぐ反応
+→ Mirageが話している途中でもユーザーが割り込める
+
+というChatGPT Liveのような体験。
+候補としては Moshi系、PersonaPlex、LLM-jp-Moshi などがある。
+ただし、現在のPC環境では大型の音声モデルをリアルタイム処理するのは厳しいので、クラウドGPUを使う方向。
+3. クラウドGPU
+候補として話したのが、
+- Google Colab
+- Lightning AI
+- Modal
+- Kaggle
+- Hugging Face ZeroGPU
+- Google Cloud
+など。
+その中で役割を分けると、
+サービス	主な用途
+Colab	モデルをちょっと試す
+Kaggle	無料GPUで実験
+Lightning AI	GPU付き開発環境として使う
+Modal	MirageのAIバックエンドとして使う
+Google Cloud	本格的なクラウド環境を構築
+HF ZeroGPU	軽い検証・デモ
+
+
+という感じ。
+特に重要なのはLightningとModal
+Lightning AI
+「GPU付きの開発PCをクラウドに置く」
+
+感覚。
+GitHubからcloneして、
+コードを書く
+↓
+Pythonを実行
+↓
+GPUでモデルを動かす
+↓
+デバッグ
+↓
+修正
+という開発に向いている。
+Modal
+「GPUを使うAIバックエンドを作る」
+
+という感覚。
+最終的には、
+React / Three.js
+       ↓
+   Mirage
+       ↓
+ WebSocket / WebRTC
+       ↓
+     Modal
+       ↓
+     GPU
+       ↓
+ Speech / Motion AI
+のようにできる。
+なので、最終的なMirageのAIバックエンドとしてはModalがかなり有力。
+4. Motionについて
+ここが今回かなり重要。
+現在は、
+事前に用意したモーション
+↓
+条件に応じて再生
+という方式。
+これを、
+AIがユーザーの指示を理解して、キャラクターの行動を決める
+
+方向へ進化させる。
+例えば、
+「踊って」
+
+なら、
+ユーザー
+ ↓
+LLM
+ ↓
+action = dance
+ ↓
+Motion System
+ ↓
+Three.js
+ ↓
+🕺
+という流れ。
+5. Text-to-Motionは「全部をAI生成」にしない
+ここが今回の重要な結論。
+最初から、
+「踊って」→ 毎回AIが完全なダンスモーションを生成
+
+にする必要はない。
+むしろ、
+Level 1：Motion Command
+歩く
+止まる
+座る
+手を振る
+踊る
+ジャンプ
+見る
+などの既存モーションをAIが選択。
+Level 2：Motion Blending
+複数の動きを組み合わせる。
+例えば、
+「歩きながらこっちに手を振って」
+
+なら、
+下半身 → walk
+上半身 → wave
+頭 → look_at_user
+のようにする。
+これだけでもかなり「AIが身体を持っている」感じが出る。
+Level 3：Text-to-Motion
+その上で、
+「ロボットみたいに踊って」
+「もっと激しく踊って」
+「恥ずかしそうに踊って」
+
+など、既存モーションでは対応できない部分だけAI生成にする。
+これが現状一番現実的。
+6. 音楽も独立したシステムにする
+今回追加で出てきたのがこれ。
+例えば、
+「カンナムスタイル流して踊って」
+
+なら、
+                LLM
+                 ↓
+           Intent解析
+           ↙    ↓    ↘
+       Music  Motion  Emotion
+         ↓       ↓       ↓
+      Player   Animator  Face
+         ↓       ↓       ↓
+         └───────┼───────┘
+                 ↓
+              Three.js
+という構造。
+つまり、
+音楽・モーション・表情・会話を全部別システムとして設計する。
+これはかなり重要。
+7. 音楽とモーションを連携させる
+さらに、
+音楽
+ ↓
+Beat Detection
+ ↓
+BPM / Beat
+ ↓
+Motion Engine
+ ↓
+ダンス
+とすれば、
+音楽に合わせてキャラクターが踊る
+こともできる。
+例えば、
+「この曲に合わせて踊って」
+
+↓
+音楽再生
+↓
+ビート検出
+↓
+ダンス開始
+↓
+サビ → 動きを大きく
+↓
+曲終了 → 決めポーズ
+みたいな演出も可能。
+これはText-to-Motionを完全実装するより先にやる価値が高い。
+8. 顔・表情も別システム
+身体だけじゃなく、
+音声
+ ↓
+Face Animation
+ ↓
+口・表情
+もリアルタイム化できる。
+NVIDIA ACE / Audio2Face系の技術も候補。
+ただしMirageはReact + Three.jsなので、Unreal向けの機能をそのまま使うのではなく、必要な部分を自分のシステムに組み込む方向。
+9. 最終的なMirageのイメージ
+最終的にはこんな構造が理想。
+                         Mirage
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         Conversation     Music       Motion
+              │            │            │
+              ↓            ↓            ↓
+          Speech AI      Player      Motion AI
+              │                         │
+              │                    Motion Engine
+              │                         │
+              └────────────┬────────────┘
+                           ↓
+                     Emotion System
+                           ↓
+                      Face / Body
+                           ↓
+                     Three.js Avatar
+そしてバックエンド側は、
+                Cloud
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+     Speech AI           Motion AI
+        │                   │
+        └─────────┬─────────┘
+                  ↓
+                Modal
+                  ↓
+               GPU
+みたいにする。
+10. 開発順序
+俺ならMirageではこの順番にする。
+STEP 1
+既存モーションをAIから制御
+「踊って」
+→ dance
+STEP 2
+Motion Blending
+walk + wave + look_at
+STEP 3
+音楽システム
+「曲を流して」
+→ Music Player
+STEP 4
+音楽とMotionを同期
+BPM
+↓
+Dance
+STEP 5
+リアルタイム音声会話
+Full Duplex Speech
+STEP 6
+表情・口のリアルタイム制御
+STEP 7
+必要になったところだけText-to-Motion
+こうすれば、最初から巨大なAIモデルを何個も動かす必要がない。
+一番大事な考え方
+Mirageを、
+「AIモデルをいっぱい搭載した3Dキャラクター」
+
+にするんじゃなくて、
+「AIが会話・音楽・身体・表情など複数の能力を組み合わせて、自律的に行動する3Dキャラクターシステム」
+
+として設計する。
+これなら今あるinteractionMachineも活かせる。
+今の
+visitor
+attention
+conversation
+greeting
+departure
+に、
+action
+motion
+emotion
+music
