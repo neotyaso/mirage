@@ -1,6 +1,28 @@
 # 再開メモ
 
-> 最終更新: 2026-07-23
+> 最終更新: 2026-09-11（Gemini完全自立型へ方針転換・Moshi系撤去・M1開始）
+>
+> ## ★ 2026-09-11: Gemini完全自立型への置換 (M1進行中)
+>
+> 目標: オペレータ不要で呼び込み→会話→見送りを自律継続。Groq/Aivis依存から脱却しGemini一本化。
+> 接続は直結本線（`:8002`はtoken発行のみ、音声はブラウザ→Google）。声はZephyr統一。
+>
+> ### やったこと
+> - `:8002` 未起動による `token発行失敗: 502` を特定・常駐起動で解消（直/vite経由ともtoken発行OK確認）
+> - Moshi S2S関連を撤去（front: `useMoshiConversation`・`moshiAudioProcessor`・`moshi-lab/`・`moshi-lab.html`／backend: `moshi_engine/`・`server/factory,websocket,protocol,main`・`cloud/modal_llmjp_moshi_app`・`scripts/test_modal_ws`・`monitoring/`・`audio/`・旧unit test3件）。`server/session.py` はGeminiが使うため保持。`tsc`・gemini factory import検証済み
+> - `useConversation`（Groq+Aivis経路）はM1完了まで保持、PlaygroundはAvatar調整用に保持
+>
+> ### これからやること（M1: 最小疎通＋計測付き）
+> 1. Appにエンジン切替（既存/Gemini）を追加
+> 2. 自立フロー移植（mid/near自動開始、離脱で停止＋履歴リセット、沈黙ナッジ）
+> 3. Avatar連携（speakingRef/volumeRef、ログ、リップシンク）
+> 4. 呼び込み第一声のZephyr化
+> 5. 計測（接続〜初回音声遅延、turn数、切断回数をHUD表示）
+> 6. M1完了後に `useConversation` 撤去・Aivis完全除去（M2: 自動フォールバック・長時間安定化・起動一発化）
+>
+> ---
+>
+> > 旧最終更新: 2026-07-23
 > 方向確定: **AITuber受付嬢（呼び込み展示）**
 > 現フェーズ: **実装は一段落 → ブラッシュアップ & 「見せる形」フェーズ**（勝ち筋=エンジニアリングで企業/教授に評価される。研究/学会は狙わない）
 

@@ -1,0 +1,9 @@
+# Gemini Live S2S backend — GPU不要。Moshi/Qwen の pin とは分離する。
+# Usage: pip install -r requirements-gemini.txt
+fastapi>=0.115,<0.117
+uvicorn[standard]>=0.32,<0.34
+websockets>=13,<15
+numpy>=1.26,<3
+google-genai>=1.0
+pytest>=8.3
+pytest-asyncio>=0.24
