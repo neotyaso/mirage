@@ -9,6 +9,21 @@ import type { LiveServerMessage } from "@google/genai";
 
 export type GeminiState = "disconnected" | "connecting" | "listening" | "speaking" | "error";
 
+export type GeminiLogRole = "user" | "assistant";
+
+export interface GeminiLogEntry {
+  id: number;
+  role: GeminiLogRole;
+  text: string;
+}
+
+export interface GeminiMetrics {
+  connectMs: number | null;
+  firstAudioMs: number | null;
+  turns: number;
+  disconnects: number;
+}
+
 const IN_RATE = 16_000;
 const OUT_RATE = 24_000;
 const MODEL = "gemini-3.1-flash-live-preview";
@@ -58,6 +73,16 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
   const [micLevel, setMicLevel] = useState(0);
   const [outLevel, setOutLevel] = useState(0);
   const [via, setVia] = useState("");
+  const [log, setLog] = useState<GeminiLogEntry[]>([]);
+  const [metrics, setMetrics] = useState<GeminiMetrics>({
+    connectMs: null,
+    firstAudioMs: null,
+    turns: 0,
+    disconnects: 0,
+  });
+  const logIdRef = useRef(0);
+  const connectStartRef = useRef<number | null>(null);
+  const firstAudioDoneRef = useRef(false);
 
   const setStateSafe = useCallback(
     (s: GeminiState) => {
@@ -67,6 +92,16 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     },
     [onStateChange]
   );
+
+  const resetTranscript = useCallback(() => {
+    logIdRef.current = 0;
+    setLog([]);
+  }, []);
+
+  const appendLog = useCallback((role: GeminiLogRole, text: string) => {
+    const id = logIdRef.current++;
+    setLog((prev) => [...prev, { id, role, text }]);
+  }, []);
 
   const stopPlayback = useCallback(() => {
     playQueueRef.current = [];
@@ -81,6 +116,11 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
 
   const playPcm24k = useCallback(
     async (pcm: Float32Array) => {
+      if (connectStartRef.current !== null && !firstAudioDoneRef.current) {
+        firstAudioDoneRef.current = true;
+        const ms = performance.now() - connectStartRef.current;
+        setMetrics((m) => (m.firstAudioMs === null ? { ...m, firstAudioMs: ms } : m));
+      }
       let sum = 0;
       for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i];
       setOutLevel(Math.min(1, Math.sqrt(sum / pcm.length) * 3));
@@ -124,6 +164,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       const sc = msg.serverContent;
       if (!sc) return;
       if (sc.turnComplete) {
+        setMetrics((m) => ({ ...m, turns: m.turns + 1 }));
         if (stateRef.current !== "disconnected") setStateSafe("listening");
         return;
       }
@@ -150,11 +191,17 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
         }
       }
       const outT = sc.outputTranscription?.text;
-      if (outT) onOutputTextRef.current?.(outT);
+      if (outT) {
+        appendLog("assistant", outT);
+        onOutputTextRef.current?.(outT);
+      }
       const inT = sc.inputTranscription?.text;
-      if (inT) onInputTextRef.current?.(inT);
+      if (inT) {
+        appendLog("user", inT);
+        onInputTextRef.current?.(inT);
+      }
     },
-    [playPcm24k, stopPlayback, setStateSafe]
+    [playPcm24k, stopPlayback, setStateSafe, appendLog]
   );
 
   const startCapture = useCallback(async () => {
@@ -246,6 +293,9 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     if (playCtxRef.current.state === "suspended") await playCtxRef.current.resume();
 
     const myAttempt = ++attemptRef.current;
+    connectStartRef.current = performance.now();
+    firstAudioDoneRef.current = false;
+    setMetrics((m) => ({ ...m, connectMs: null, firstAudioMs: null }));
     setStateSafe("connecting");
     setVia("token取得中…");
     const r = await fetch("/api/gemini-token");
@@ -275,6 +325,10 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       callbacks: {
         onopen: () => {
           if (attemptRef.current !== myAttempt) return;
+          if (connectStartRef.current !== null) {
+            const ms = performance.now() - connectStartRef.current;
+            setMetrics((m) => ({ ...m, connectMs: ms }));
+          }
           setStateSafe("listening");
           void startCapture().catch((e) => onErrorRef.current?.(e as Error));
         },
@@ -287,6 +341,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
         },
         onclose: (e: CloseEvent) => {
           if (attemptRef.current !== myAttempt) return;
+          setMetrics((m) => ({ ...m, disconnects: m.disconnects + 1 }));
           if (stateRef.current !== "disconnected") setStateSafe("disconnected");
           void e;
         },
@@ -353,6 +408,9 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     connect,
     disconnect,
     commitUtterance,
+    resetTranscript,
+    log,
+    metrics,
     isConnected: state !== "disconnected" && state !== "error" && state !== "connecting",
     micLevel,
     outLevel,
