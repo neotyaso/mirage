@@ -213,6 +213,73 @@ export default function App() {
   const geminiConvState = geminiState === "speaking" ? "speaking" : geminiState === "connecting" ? "thinking" : geminiActive ? "listening" : "idle" as const;
   const activeConvState = engine === "gemini" ? geminiConvState : convState;
 
+  // M2堅牢化: Gemini→Groq自動フォールバック（橋渡し側のみ。hook本体の変更は禁止）。
+  // 発動条件: token発行失敗・connect失敗・error状態・会話中の異常切断。
+  // 指数バックオフ(1s,2s)で最大3回リトライし、ダメならGroqに切替えて会話継続する。
+  // 切断カウンタは既存metrics.disconnectsを再利用（重複実装なし）。
+  const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
+  const geminiFailCountRef = useRef(0);
+  const geminiRetryingRef = useRef(false);
+  const geminiIntentionalRef = useRef(false); // 離脱・停止・切替時の意図的disconnectを異常と誤認しない用
+  const prevDisconnectsRef = useRef(geminiMetrics.disconnects);
+  const geminiMetricsRef = useRef(geminiMetrics);
+  geminiMetricsRef.current = geminiMetrics;
+
+  // App側speak()(Aivis AudioContext)の後始末。hook外の橋渡し補完として
+  // フォールバック/切替時に呼び出す（useGeminiLive側のdisconnect後始末はhook内に既存のため触らない）。
+  // activeSourceRefは下で宣言されるが、呼び出しはレンダー後のイベント/effectからのみなのでTDZ問題なし。
+  function stopAppAudio() {
+    if (activeSourceRef.current) {
+      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
+      activeSourceRef.current.ctx.close().catch(() => {});
+      activeSourceRef.current = null;
+    }
+    speechSynthesis.cancel();
+    speakingRef.current = false;
+    volumeRef.current = 0;
+  }
+
+  function doFallbackToGroq(reason: string) {
+    if (engineRef.current !== "gemini") return;
+    geminiIntentionalRef.current = true;
+    try { geminiRaw.disconnect(); } catch { /* ignore */ }
+    stopAppAudio();
+    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+    geminiFailCountRef.current = 0;
+    geminiRetryingRef.current = false;
+    setFallbackNotice(reason);
+    setEngine("groq");
+    // 会話継続: Groq経路を起動（失敗しても画面は残る）
+    void startConversation().catch(() => {});
+  }
+
+  async function connectGeminiRobust() {
+    if (engineRef.current !== "gemini" || geminiRetryingRef.current) return;
+    if (geminiRaw.state !== "disconnected" && geminiRaw.state !== "error") return; // 接続中・接続済みは何もしない
+    geminiRetryingRef.current = true;
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await geminiConnectRef.current();
+          geminiFailCountRef.current = 0;
+          return;
+        } catch (e) {
+          geminiFailCountRef.current++;
+          console.error(`[Gemini] connect failed (attempt ${attempt + 1}/3):`, e);
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt)); // 1s, 2s
+            if (engineRef.current !== "gemini") return;
+          }
+        }
+      }
+      doFallbackToGroq(`Gemini接続に3回失敗したためGroqに切替 (disconnects=${geminiMetricsRef.current.disconnects})`);
+    } finally {
+      geminiRetryingRef.current = false;
+    }
+  }
+  const connectGeminiRobustRef = useRef(() => Promise.resolve());
+  connectGeminiRobustRef.current = connectGeminiRobust;
+
   // Avatar連携: Gemini選択中かつセッション有効時のみ speakingRef/volumeRef を橋渡し。
   // disconnected/error時は触らない（開始・別れの一言のspeak()=Aivis駆動のリップシンクを殺さないため）。
   // 行動タグ(nod等)の移植は対象外のため、actionRefはGroq側のまま流用しない。
@@ -229,11 +296,38 @@ export default function App() {
     }
   }, [engine, geminiActive, geminiState, geminiMicLevel, geminiOutLevel]);
 
+  // M2: Geminiのerror状態・異常切断を検知してリトライ経路へ回す。
+  // 意図的disconnectはhook側でattemptが進むためmetrics.disconnectsが増えないが、
+  // 念のためgeminiIntentionalRefでも除外する。計数は既存disconnectsのみ。
+  useEffect(() => {
+    if (engine !== "gemini" || geminiRetryingRef.current) {
+      prevDisconnectsRef.current = geminiMetrics.disconnects;
+      return;
+    }
+    if (geminiState === "error") {
+      prevDisconnectsRef.current = geminiMetrics.disconnects;
+      void connectGeminiRobustRef.current();
+      return;
+    }
+    if (geminiMetrics.disconnects > prevDisconnectsRef.current) {
+      prevDisconnectsRef.current = geminiMetrics.disconnects;
+      if (geminiIntentionalRef.current) return;
+      void connectGeminiRobustRef.current();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, geminiState, geminiMetrics.disconnects]);
+
   // エンジン切替時は旧エンジン側を止める（両方のマイク/音声が同時に走らないように）
   function switchEngine(next: Engine) {
     if (next === engineRef.current) return;
+    geminiIntentionalRef.current = true;
     if (convState !== "idle") stopConversation();
-    if (geminiActive) geminiRaw.disconnect();
+    if (geminiActive) { try { geminiRaw.disconnect(); } catch { /* ignore */ } }
+    stopAppAudio();
+    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+    geminiFailCountRef.current = 0;
+    geminiRetryingRef.current = false;
+    if (next === "gemini") setFallbackNotice(null); // 手動で戻す＝フォールバック解除
     setEngine(next);
   }
 
@@ -598,7 +692,7 @@ export default function App() {
           // Gemini側も同じ枠組み: 開始の一言(speak流用=Zephyr化対象外)＋connectで会話開始
           speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
           if (engineRef.current === "gemini") {
-            geminiConnectRef.current().catch((e) => console.error("[Gemini] connect failed:", e));
+            void connectGeminiRobustRef.current();
           } else {
             startConversation();
           }
@@ -613,8 +707,10 @@ export default function App() {
             fireAction("beckon");
           }
           if (engineRef.current === "gemini") {
+            geminiIntentionalRef.current = true;
             geminiDisconnectRef.current();
             geminiResetRef.current();
+            setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
           } else {
             stopConversation();
             resetHistory();
@@ -682,6 +778,16 @@ export default function App() {
         </div>
       )}
 
+      {/* M2: フォールバック発生の明示表示（HUDとは別に常時可視）。手動でGeminiに戻せる */}
+      {started && fallbackNotice && (
+        <div style={fallbackBannerStyle}>
+          <span>⚠ {fallbackNotice}</span>
+          <button style={fallbackBackBtnStyle} onClick={() => switchEngine("gemini")}>
+            Geminiに戻す
+          </button>
+        </div>
+      )}
+
       {/* 検出用カメラ（顔検出が参照する実体なので常時マウント。展示中は"d"キーを押すまで非表示） */}
       <video
         ref={videoRef}
@@ -713,7 +819,7 @@ export default function App() {
               <button
                 key={e}
                 style={{ ...engineBtnStyle, background: engine === e ? "#8b5cf6" : "rgba(55,65,81,0.85)" }}
-                onClick={() => setEngine(e)}
+                onClick={() => { if (e === "gemini") setFallbackNotice(null); setEngine(e); }}
               >
                 {e === "groq" ? "Groq" : "Gemini"}
               </button>
@@ -748,7 +854,11 @@ export default function App() {
                 speakingRef.current = false;
                 volumeRef.current = 0;
                 if (engineRef.current === "gemini") {
-                  if (geminiActive) geminiDisconnectRef.current();
+                  if (geminiActive) {
+                    geminiIntentionalRef.current = true;
+                    geminiDisconnectRef.current();
+                    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+                  }
                 } else if (convState !== "idle") stopConversation();
               }
             }}
@@ -780,9 +890,11 @@ export default function App() {
                 if (engine === "gemini") {
                   if (!geminiActive) {
                     speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
-                    geminiConnectRef.current().catch((e) => console.error("[Gemini] connect failed:", e));
+                    void connectGeminiRobustRef.current();
                   } else {
+                    geminiIntentionalRef.current = true;
                     geminiDisconnectRef.current();
+                    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
                   }
                 } else if (convState === "idle") {
                   startConversation();
@@ -818,6 +930,11 @@ export default function App() {
           {engine === "gemini" && (
             <div style={{ marginTop: 2, opacity: 0.85 }}>
               m: connectMs={geminiMetrics.connectMs ?? "-"} | firstAudioMs={geminiMetrics.firstAudioMs ?? "-"} | turns={geminiMetrics.turns} | disconnects={geminiMetrics.disconnects}
+            </div>
+          )}
+          {fallbackNotice && (
+            <div style={{ marginTop: 2, color: "#fbbf24" }}>
+              fallback: {fallbackNotice}
             </div>
           )}
           <div style={{ marginTop: 2, opacity: 0.85 }}>
@@ -892,6 +1009,35 @@ const engineBtnStyle: CSSProperties = {
   borderRadius: 8,
   cursor: "pointer",
   fontWeight: "bold",
+};
+
+const fallbackBannerStyle: CSSProperties = {
+  position: "absolute",
+  top: 16,
+  right: 16,
+  maxWidth: "min(360px, 80vw)",
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "8px 12px",
+  background: "rgba(120,53,15,0.92)",
+  border: "1px solid #fbbf24",
+  borderRadius: 8,
+  fontSize: 12,
+  color: "#fef3c7",
+  zIndex: 25,
+};
+
+const fallbackBackBtnStyle: CSSProperties = {
+  padding: "6px 12px",
+  fontSize: 12,
+  fontWeight: "bold",
+  color: "#fff",
+  background: "#8b5cf6",
+  border: "none",
+  borderRadius: 6,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
 const chatLogStyle: CSSProperties = {
