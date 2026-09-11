@@ -11,6 +11,7 @@ import { generateVisionComment } from "./vision/visionComment";
 import { useFaceDetection, getDistanceZone, ZONE_THRESHOLDS, adjustZoneThreshold, resetZoneThresholds } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
 import { useConversation } from "./hooks/useConversation";
+import { useGeminiLive } from "./hooks/useGeminiLive";
 import { createInitialInteractionState, transitionInteraction } from "./state/interactionMachine";
 import type { InteractionEvent, InteractionTransition } from "./state/interactionMachine";
 import type { MutableRefObject } from "react";
@@ -187,6 +188,55 @@ export default function App() {
 
   const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef, getConversationContext);
 
+  // エンジン切替: "groq"=既存(デフォルト) / "gemini"=Gemini Live。M1統合用。
+  // useGeminiLive側の追加契約(log/resetTranscript/metrics)は別担当が実装中のため、
+  // ここでは契約名で参照しつつ未実装でも落ちない防御フォールバックを付ける。
+  type Engine = "groq" | "gemini";
+  const [engine, setEngine] = useState<Engine>("groq");
+  const engineRef = useRef<Engine>("groq");
+  useEffect(() => { engineRef.current = engine; }, [engine]);
+  type GeminiContract = ReturnType<typeof useGeminiLive> & Partial<{
+    log: { id: number; role: "user" | "assistant"; text: string }[];
+    resetTranscript: () => void;
+    metrics: { connectMs: number | null; firstAudioMs: number | null; turns: number; disconnects: number };
+  }>;
+  const geminiRaw = useGeminiLive() as GeminiContract;
+  const geminiState = geminiRaw.state;
+  const geminiLog = geminiRaw.log ?? [];
+  const geminiMetrics: { connectMs: number | null; firstAudioMs: number | null; turns: number; disconnects: number } =
+    geminiRaw.metrics ?? { connectMs: null, firstAudioMs: null, turns: 0, disconnects: 0 };
+  const geminiResetTranscript = geminiRaw.resetTranscript ?? (() => {});
+  const geminiActive = geminiState !== "disconnected" && geminiState !== "error";
+  // チャットUI・離脱判定はエンジン側のログに一本化
+  const displayLog = engine === "gemini" ? geminiLog : log;
+  // interactionMachine用にGemini状態を会話状態へ写像
+  const geminiConvState = geminiState === "speaking" ? "speaking" : geminiState === "connecting" ? "thinking" : geminiActive ? "listening" : "idle" as const;
+  const activeConvState = engine === "gemini" ? geminiConvState : convState;
+
+  // Avatar連携: Gemini選択中かつセッション有効時のみ speakingRef/volumeRef を橋渡し。
+  // disconnected/error時は触らない（開始・別れの一言のspeak()=Aivis駆動のリップシンクを殺さないため）。
+  // 行動タグ(nod等)の移植は対象外のため、actionRefはGroq側のまま流用しない。
+  const geminiMicLevel = geminiRaw.micLevel;
+  const geminiOutLevel = geminiRaw.outLevel;
+  useEffect(() => {
+    if (engine !== "gemini" || !geminiActive) return;
+    if (geminiState === "speaking") {
+      speakingRef.current = true;
+      volumeRef.current = geminiOutLevel;
+    } else {
+      speakingRef.current = false;
+      volumeRef.current = geminiMicLevel * 0.3;
+    }
+  }, [engine, geminiActive, geminiState, geminiMicLevel, geminiOutLevel]);
+
+  // エンジン切替時は旧エンジン側を止める（両方のマイク/音声が同時に走らないように）
+  function switchEngine(next: Engine) {
+    if (next === engineRef.current) return;
+    if (convState !== "idle") stopConversation();
+    if (geminiActive) geminiRaw.disconnect();
+    setEngine(next);
+  }
+
   // 行動タグ(頷く/首かしげる/手招き)をApp側からも発火する共通ヘルパー。
   // idは負のタイムスタンプにして、useConversation内部のLLMタグ検出が使う正の連番と衝突させない
   // （Avatarは値の変化=idの差でしか新規トリガーを判定しないので、正負が混ざっても問題ない）
@@ -214,8 +264,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    dispatchInteraction({ type: "CONVERSATION_STATE_CHANGED", state: convState });
-  }, [convState, dispatchInteraction]);
+    dispatchInteraction({ type: "CONVERSATION_STATE_CHANGED", state: activeConvState });
+  }, [activeConvState, dispatchInteraction]);
 
   // "d"キーでデバッグUI（小窓カメラ・HUD・手動操作ボタン）の表示を切り替え。
   // 加えて、展示当日に会場で人が通る距離へ距離ゾーン閾値をその場で合わせるためのキー操作:
@@ -238,10 +288,10 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [debugMode]);
 
-  // チャットログが増えたら自動で最下部へスクロール
+  // チャットログが増えたら自動で最下部へスクロール（エンジン側の表示ログに追従）
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [log]);
+  }, [displayLog]);
 
   // Web Speech API フォールバック用
   useEffect(() => {
@@ -393,8 +443,16 @@ export default function App() {
   const lastStartleRef = useRef(0);
   // 視覚コメント（「私、見えてるよ」）: 生成は非同期(約1〜2秒)。結果が返る頃には
   // interval側のconvState(クロージャ値)が古いので、最新をrefで参照して差し込み可否を判定する
-  const convStateRef = useRef(convState);
-  useEffect(() => { convStateRef.current = convState; }, [convState]);
+  const convStateRef = useRef(activeConvState);
+  useEffect(() => { convStateRef.current = activeConvState; }, [activeConvState]);
+  // interval内から呼ぶGemini操作はref経由（micLevel更新のたびにobject同一性が変わるため、
+  // クロージャで直接掴むとintervalが作り直され続けるのを避ける）
+  const geminiConnectRef = useRef(geminiRaw.connect);
+  geminiConnectRef.current = geminiRaw.connect;
+  const geminiDisconnectRef = useRef(geminiRaw.disconnect);
+  geminiDisconnectRef.current = geminiRaw.disconnect;
+  const geminiResetRef = useRef(geminiResetTranscript);
+  geminiResetRef.current = geminiResetTranscript;
   const visionBusyRef = useRef(false);
   const lastVisionAtRef = useRef(0);
   const VISION_COOLDOWN_MS = 25000; // 同じ人・立て続けの連発を防ぐ
@@ -402,8 +460,8 @@ export default function App() {
   // setInterval側のクロージャがconvState変化時にしか作り直されず、logの更新を都度拾えないためrefで同期する
   const hasLogRef = useRef(false);
   useEffect(() => {
-    hasLogRef.current = log.length > 0;
-  }, [log]);
+    hasLogRef.current = displayLog.length > 0;
+  }, [displayLog]);
   useEffect(() => {
     const id = setInterval(() => {
       const p = presentRef.current;
@@ -428,7 +486,7 @@ export default function App() {
           const speed = (curSize - prevFaceSizeRef.current) / dt;
           if (
             started && !paused && !speakingRef.current &&
-            convState === "idle" && // 会話中(聞いてる/考え中含む)は驚きセリフで割り込まない
+            activeConvState === "idle" && // 会話中(聞いてる/考え中含む)は驚きセリフで割り込まない
             curSize > STARTLE_MIN_SIZE &&
             speed > STARTLE_SPEED_THRESHOLD &&
             nowMs - lastStartleRef.current > STARTLE_COOLDOWN_MS
@@ -441,7 +499,7 @@ export default function App() {
         prevFaceSizeAtRef.current = nowMs;
       }
 
-      if (started && !paused && p && z !== "absent" && !speakingRef.current && convState === "idle") {
+      if (started && !paused && p && z !== "absent" && !speakingRef.current && activeConvState === "idle") {
         const now = performance.now();
         if (silentResumeRef.current) {
           silentResumeRef.current = false;
@@ -512,7 +570,7 @@ export default function App() {
       if (
         started && !paused &&
         (z === "mid" || z === "near") &&
-        !speakingRef.current && convState !== "thinking" &&
+        !speakingRef.current && activeConvState !== "thinking" &&
         Math.abs(faceYawRef.current) > LOOK_AWAY_YAW_THRESHOLD
       ) {
         const now = performance.now();
@@ -533,14 +591,19 @@ export default function App() {
 
       if (p) lastPresentAtRef.current = performance.now();
       if (started && !paused) {
-        if ((z === "mid" || z === "near") && convState === "idle") {
+        if ((z === "mid" || z === "near") && activeConvState === "idle") {
           // 会話モードは開始しても来場者が話すまでレムは黙って聞くだけの設計だが、それだと
           // 「近づいたのに何も起きない＝壊れてる？」と感じられてしまう。会話開始の瞬間は必ず
           // 一言喋って「聞く態勢に入った」ことを分かりやすくする（呼び込みの通常クールダウンとは別枠）
+          // Gemini側も同じ枠組み: 開始の一言(speak流用=Zephyr化対象外)＋connectで会話開始
           speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
-          startConversation();
+          if (engineRef.current === "gemini") {
+            geminiConnectRef.current().catch((e) => console.error("[Gemini] connect failed:", e));
+          } else {
+            startConversation();
+          }
         }
-        if (convState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
+        if (activeConvState !== "idle" && performance.now() - lastPresentAtRef.current > AWAY_TIMEOUT_MS) {
           // 実際にやり取りがあった（ログが残っている）場合だけ別れの一言を挟む。
           // 呼び込みだけで素通りされた時にまで「またね」と言うと不自然なので
           if (hasLogRef.current) {
@@ -549,8 +612,13 @@ export default function App() {
             // beckon再生中(約2.5秒)はAvatarが正面を向いて固まる＝手を振りながらの見送りになる
             fireAction("beckon");
           }
-          stopConversation();
-          resetHistory();
+          if (engineRef.current === "gemini") {
+            geminiDisconnectRef.current();
+            geminiResetRef.current();
+          } else {
+            stopConversation();
+            resetHistory();
+          }
           lastVisionCommentRef.current = ""; // 見た目メモは次の来場者に持ち越さない
           silentResumeRef.current = true;
         }
@@ -558,7 +626,7 @@ export default function App() {
     }, 150);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started, paused, convState]);
+  }, [started, paused, activeConvState, engine]);
 
   function handleStart() {
     setStarted(true);
@@ -588,7 +656,7 @@ export default function App() {
 
         <Suspense fallback={null}>
           <Room />
-          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} eyeCenterRef={eyeCenterRef} allFaceCentersRef={allFaceCentersRef} allEyeCentersRef={allEyeCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={convState !== "idle"} />
+          <Avatar speakingRef={speakingRef} volumeRef={volumeRef} faceCenterRef={faceCenterRef} eyeCenterRef={eyeCenterRef} allFaceCentersRef={allFaceCentersRef} allEyeCentersRef={allEyeCentersRef} expressionRef={expressionRef} faceSizeRef={faceSizeRef} actionRef={actionRef} paused={paused} conversing={activeConvState !== "idle"} />
           {/* 足元の接地影。「本当にそこに立っている」感を出す（暖色寄りのやわらかい影） */}
           <ContactShadows position={[0, 0.01, 0]} scale={5} far={2.2} blur={2.6} opacity={0.42} color="#4a3d2c" resolution={512} />
         </Suspense>
@@ -601,10 +669,10 @@ export default function App() {
       {/* 環境音（小音量）。稼働中のみ。展示スタートのクリックが音声解放を兼ねる */}
       <Ambience active={started && !paused} />
 
-      {/* 会話ログ（左側に流れるチャット） */}
-      {started && log.length > 0 && (
+      {/* 会話ログ（左側に流れるチャット。Gemini選択時はGeminiのlogを表示） */}
+      {started && displayLog.length > 0 && (
         <div style={chatLogStyle}>
-          {log.map((entry) => (
+          {displayLog.map((entry) => (
             <div key={entry.id} style={chatBubbleStyle(entry.role)}>
               <div style={chatSenderStyle}>{entry.role === "user" ? "あなた" : "レム"}</div>
               {entry.text}
@@ -635,12 +703,26 @@ export default function App() {
       />
 
       {!started ? (
-        <button style={startBtnStyle} onClick={handleStart}>
-          ▶ 展示スタート
-        </button>
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, zIndex: 30 }}>
+          <button style={{ ...startBtnStyle, position: "static", transform: "none" }} onClick={handleStart}>
+            ▶ 展示スタート
+          </button>
+          {/* エンジン切替（開始画面。デフォルトは既存Groq） */}
+          <div style={{ display: "flex", gap: 8 }}>
+            {(["groq", "gemini"] as const).map((e) => (
+              <button
+                key={e}
+                style={{ ...engineBtnStyle, background: engine === e ? "#8b5cf6" : "rgba(55,65,81,0.85)" }}
+                onClick={() => setEngine(e)}
+              >
+                {e === "groq" ? "Groq" : "Gemini"}
+              </button>
+            ))}
+          </div>
+        </div>
       ) : debugMode ? (
         <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8 }}>
-          {convState === "idle" && (
+          {activeConvState === "idle" && (
             <button style={callBtnStyle} onClick={() => callOut(zone !== "absent" ? zone : "mid")}>
               🔊 手動呼び込み
             </button>
@@ -665,7 +747,9 @@ export default function App() {
                 }
                 speakingRef.current = false;
                 volumeRef.current = 0;
-                if (convState !== "idle") stopConversation();
+                if (engineRef.current === "gemini") {
+                  if (geminiActive) geminiDisconnectRef.current();
+                } else if (convState !== "idle") stopConversation();
               }
             }}
           >
@@ -678,13 +762,44 @@ export default function App() {
       {started && debugMode && (
         <div style={convPanelStyle}>
           <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
+            {/* エンジン切替（デバッグ用。HUDはpointer-events:noneのため操作系はここに置く） */}
+            {(["groq", "gemini"] as const).map((e) => (
+              <button
+                key={e}
+                style={{ ...convBtnStyle, background: engine === e ? "#8b5cf6" : "#374151" }}
+                onClick={() => switchEngine(e)}
+              >
+                {e === "groq" ? "Groq" : "Gemini"}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
             <button
-              style={{ ...convBtnStyle, background: convState === "idle" ? "#8b5cf6" : "#ef4444" }}
-              onClick={convState === "idle" ? startConversation : stopConversation}
+              style={{ ...convBtnStyle, background: activeConvState === "idle" ? "#8b5cf6" : "#ef4444" }}
+              onClick={() => {
+                if (engine === "gemini") {
+                  if (!geminiActive) {
+                    speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
+                    geminiConnectRef.current().catch((e) => console.error("[Gemini] connect failed:", e));
+                  } else {
+                    geminiDisconnectRef.current();
+                  }
+                } else if (convState === "idle") {
+                  startConversation();
+                } else {
+                  stopConversation();
+                }
+              }}
             >
-              {convState === "idle" ? "🎤 会話開始" : convState === "listening" ? "👂 聴いてる…" : convState === "thinking" ? "💭 考え中…" : "🔊 喋ってる"}
+              {activeConvState === "idle" ? "🎤 会話開始" : activeConvState === "listening" ? "👂 聴いてる…" : activeConvState === "thinking" ? "💭 考え中…" : "🔊 喋ってる"}
             </button>
-            <button style={{ ...convBtnStyle, background: "#374151" }} onClick={resetHistory}>
+            <button
+              style={{ ...convBtnStyle, background: "#374151" }}
+              onClick={() => {
+                if (engine === "gemini") geminiResetRef.current();
+                else resetHistory();
+              }}
+            >
               🔄 会話リセット
             </button>
           </div>
@@ -697,6 +812,14 @@ export default function App() {
             cam: {camError ? `ERR ${camError}` : camReady ? "ok" : "…"} | 在席:{" "}
             {present ? "YES" : "no"} | 顔: {faces} | zone: {zone} | conv: {convState} | {!started ? "停止中" : paused ? "一時停止中" : "稼働中"}
           </div>
+          <div style={{ marginTop: 2, opacity: 0.85 }}>
+            engine: {engine}{engine === "gemini" ? ` | gemini: ${geminiState} | via: ${geminiRaw.via || "-"}` : ""} | gconv: {activeConvState}
+          </div>
+          {engine === "gemini" && (
+            <div style={{ marginTop: 2, opacity: 0.85 }}>
+              m: connectMs={geminiMetrics.connectMs ?? "-"} | firstAudioMs={geminiMetrics.firstAudioMs ?? "-"} | turns={geminiMetrics.turns} | disconnects={geminiMetrics.disconnects}
+            </div>
+          )}
           <div style={{ marginTop: 2, opacity: 0.85 }}>
             size: {curFaceSize.toFixed(3)} | far境界(←→): {ZONE_THRESHOLDS.far.toFixed(3)} | near境界(↑↓): {ZONE_THRESHOLDS.mid.toFixed(3)} | 0=リセット
           </div>
@@ -754,6 +877,16 @@ const convPanelStyle: CSSProperties = {
 const convBtnStyle: CSSProperties = {
   padding: "10px 20px",
   fontSize: 14,
+  color: "#fff",
+  border: "none",
+  borderRadius: 8,
+  cursor: "pointer",
+  fontWeight: "bold",
+};
+
+const engineBtnStyle: CSSProperties = {
+  padding: "8px 18px",
+  fontSize: 13,
   color: "#fff",
   border: "none",
   borderRadius: 8,
