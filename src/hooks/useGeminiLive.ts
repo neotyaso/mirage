@@ -67,6 +67,10 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
   const playQueueRef = useRef<Float32Array[]>([]);
   const playingRef = useRef(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // ギャップレス再生用: 予約済みsource群・次チャンク開始時刻・世代カウンタ
+  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const playCursorRef = useRef(0);
+  const playGenRef = useRef(0);
   const stateRef = useRef<GeminiState>("disconnected");
   const attemptRef = useRef(0);
 
@@ -106,12 +110,21 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
 
   const stopPlayback = useCallback(() => {
     playQueueRef.current = [];
-    try {
-      currentSourceRef.current?.stop();
-    } catch {
-      /* already stopped */
+    for (const src of activeSourcesRef.current) {
+      try {
+        src.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        src.disconnect();
+      } catch {
+        /* ignore */
+      }
     }
+    activeSourcesRef.current.clear();
     currentSourceRef.current = null;
+    playCursorRef.current = 0;
     playingRef.current = false;
   }, []);
 
@@ -133,29 +146,38 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       if (ctx.state === "suspended") await ctx.resume();
       setStateSafe("speaking");
 
-      playQueueRef.current.push(pcm);
-      if (playingRef.current) return;
+      // ギャップレス再生: onended連鎖だとJSスレッドの隙間でブツ切れになるため、
+      // AudioContext時刻基準で次チャンクを予約していく
+      const buf = ctx.createBuffer(1, pcm.length, OUT_RATE);
+      buf.copyToChannel(pcm as Float32Array<ArrayBuffer>, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      activeSourcesRef.current.add(src);
+      const now = ctx.currentTime;
+      if (playCursorRef.current < now - 0.2) playCursorRef.current = now + 0.05;
+      const startAt = playCursorRef.current;
+      playCursorRef.current = startAt + buf.duration;
+      playGenRef.current += 1;
+      const myGen = playGenRef.current;
+      currentSourceRef.current = src;
       playingRef.current = true;
-      while (playQueueRef.current.length > 0) {
-        const next = playQueueRef.current.shift()!;
-        const buf = ctx.createBuffer(1, next.length, OUT_RATE);
-        buf.copyToChannel(next as Float32Array<ArrayBuffer>, 0);
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.connect(ctx.destination);
-        currentSourceRef.current = src;
-        await new Promise<void>((resolve) => {
-          src.onended = () => resolve();
-          try {
-            src.start();
-          } catch {
-            resolve();
-          }
-        });
+      src.onended = () => {
+        activeSourcesRef.current.delete(src);
         if (currentSourceRef.current === src) currentSourceRef.current = null;
+        // 猶予内に新チャンクが来なければ発話終了とみなす
+        setTimeout(() => {
+          if (playGenRef.current === myGen && stateRef.current === "speaking") {
+            playingRef.current = false;
+            setStateSafe("listening");
+          }
+        }, 350);
+      };
+      try {
+        src.start(startAt);
+      } catch {
+        activeSourcesRef.current.delete(src);
       }
-      playingRef.current = false;
-      if (stateRef.current === "speaking") setStateSafe("listening");
     },
     [setStateSafe]
   );
