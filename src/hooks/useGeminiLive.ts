@@ -4,7 +4,8 @@ import type { LiveServerMessage } from "@google/genai";
 
 // Gemini Live API 直結フック (AI Studio と同じ公式SDK方式)。
 // 自前WS実装は捨てた。メッセージ形式・再接続はSDK任せ。
-// 認証は backend (:8002) の /api/gemini-token の ephemeral token。
+// 認証は VITE_GEMINI_API_KEY のブラウザ直結 (backend不要)。
+// NOTE: キーはバンドルに含まれる。展示デモ割り切り。公開時は ephemeral token 方式に戻すこと。
 // 音声: 送信 16kHz PCM16 / 受信 24kHz PCM16。
 
 export type GeminiState = "disconnected" | "connecting" | "listening" | "speaking" | "error";
@@ -297,21 +298,15 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     firstAudioDoneRef.current = false;
     setMetrics((m) => ({ ...m, connectMs: null, firstAudioMs: null }));
     setStateSafe("connecting");
-    setVia("token取得中…");
-    const r = await fetch("/api/gemini-token");
-    if (!r.ok) {
+    setVia("キー確認中…");
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+    if (!apiKey) {
       setVia("");
       setStateSafe("error");
-      throw new Error(`token発行失敗: ${r.status} (:8002起動を確認)`);
-    }
-    const { token } = (await r.json()) as { token: string };
-    if (!token) {
-      setVia("");
-      setStateSafe("error");
-      throw new Error("token empty");
+      throw new Error("VITE_GEMINI_API_KEY 未設定 (直下.env を確認)");
     }
     setVia("SDK直結");
-    const ai = new GoogleGenAI({ apiKey: token });
+    const ai = new GoogleGenAI({ apiKey });
     const handleMessage = handleServerMessage;
     const session = await ai.live.connect({
       model: MODEL,

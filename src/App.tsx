@@ -188,12 +188,12 @@ export default function App() {
 
   const { state: convState, log, startConversation, stopConversation, resetHistory, actionRef } = useConversation(speakingRef, volumeRef, panRef, getConversationContext);
 
-  // エンジン切替: "groq"=既存(デフォルト) / "gemini"=Gemini Live。M1統合用。
+  // エンジン切替: "gemini"=メイン(S2S) / "groq"=フォールバック用パイプライン。
   // useGeminiLive側の追加契約(log/resetTranscript/metrics)は別担当が実装中のため、
-  // ここでは契約名で参照しつつ未実装でも落ちない防御フォールバックを付ける。
+  // ここでは契約名で参照しつつ未実装でも落ちない防御フォールバックを付ける.
   type Engine = "groq" | "gemini";
-  const [engine, setEngine] = useState<Engine>("groq");
-  const engineRef = useRef<Engine>("groq");
+  const [engine, setEngine] = useState<Engine>("gemini");
+  const engineRef = useRef<Engine>("gemini");
   useEffect(() => { engineRef.current = engine; }, [engine]);
   type GeminiContract = ReturnType<typeof useGeminiLive> & Partial<{
     log: { id: number; role: "user" | "assistant"; text: string }[];
@@ -213,8 +213,8 @@ export default function App() {
   const geminiConvState = geminiState === "speaking" ? "speaking" : geminiState === "connecting" ? "thinking" : geminiActive ? "listening" : "idle" as const;
   const activeConvState = engine === "gemini" ? geminiConvState : convState;
 
-  // M2堅牢化: Gemini→Groq自動フォールバック（橋渡し側のみ。hook本体の変更は禁止）。
-  // 発動条件: token発行失敗・connect失敗・error状態・会話中の異常切断。
+// M2堅牢化: Gemini→Groq自動フォールバック（橋渡し側のみ。hook本体の変更は禁止）。
+// 発動条件: キー未設定・connect失敗・error状態・会話中の異常切断。
   // 指数バックオフ(1s,2s)で最大3回リトライし、ダメならGroqに切替えて会話継続する。
   // 切断カウンタは既存metrics.disconnectsを再利用（重複実装なし）。
   const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);

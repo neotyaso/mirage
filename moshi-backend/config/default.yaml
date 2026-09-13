@@ -1,7 +1,0 @@
-host: 127.0.0.1
-port: 8000
-sample_rate: 24000
-input_device: null
-output_device: null
-model_path: null
-log_dir: logs

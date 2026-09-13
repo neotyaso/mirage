@@ -17,15 +17,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# "small": OpenAI Whisper標準モデル。エンコーダーが軽く実測3.9秒→1.1秒（約4倍速）
-# kotoba-whisper-v2.0-faster（大文字硬い日本語特化）は精度は良いがエンコーダーがlarge-v3のまま重く展示用途には不向きだった
-# 精度が足りない場合は "medium" を試す（small よりは遅いがlargeよりずっと軽い）
-MODEL_NAME = "small"
-COMPUTE_TYPE = "int8"  # Macはint8が安定。GPU(CUDA)あれば "float16" に
+# small: M1 AirのCPUでも数秒で起動・認識できるサイズ。展示の短文用途の既定
+# 精度を上げる場合のみ STT_MODEL / STT_DEVICE / STT_COMPUTE_TYPE のenvで上書き
+MODEL_NAME = os.environ.get("STT_MODEL", "small")
+DEVICE = os.environ.get("STT_DEVICE", "cpu")
+COMPUTE_TYPE = os.environ.get("STT_COMPUTE_TYPE", "int8")  # CUDAを使う場合のみ "float32" を指定 (1080Tiはfloat16不可)
 
-print(f"Loading {MODEL_NAME} ...")
-model = WhisperModel(MODEL_NAME, device="cpu", compute_type=COMPUTE_TYPE)
+print(f"Loading {MODEL_NAME} ({DEVICE}/{COMPUTE_TYPE}) ...")
+try:
+    model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
+except Exception as e:
+    print(f"[STT] {DEVICE} load failed ({e}), falling back to cpu/int8")
+    model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 print("STT server ready.")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/transcribe")
