@@ -14,9 +14,10 @@ Required for the full experience:
 | Vite dev server | Frontend and proxy | `5173` default |
 | Camera | Face detection | Browser `getUserMedia` |
 | Microphone | Conversation audio | Browser `getUserMedia` |
-| Groq | Primary STT, LLM, vision comment | proxied through `/groq` |
-| AivisSpeech | Primary TTS | `http://localhost:10101` |
-| local STT server | STT fallback | `http://localhost:8000` |
+| Gemini Live | Main S2S conversation (STT+LLM+TTS) | browser-direct (`VITE_GEMINI_API_KEY`) |
+| Groq | Fallback STT, LLM, vision comment | proxied through `/groq` |
+| AivisSpeech | TTS for Groq path (optional; else Web Speech) | `http://localhost:10101` |
+| local STT server | STT fallback (`small`, cpu) | `http://localhost:8000` |
 | Ollama | LLM fallback | `http://localhost:11434` |
 
 ## Environment Variables
@@ -321,7 +322,7 @@ Run after any behavior-affecting refactor.
 
 These are the first engineering tasks after Phase 1.
 
-1. Create a one-command local runtime script.
+1. ~~Create a one-command local runtime script.~~ Done: `npm run dev` (`scripts/dev.mjs`).
 2. Add structured health checks for Vite, AivisSpeech, STT, Ollama, and Groq.
 3. Add `.env.example`.
 4. Add an operator status panel that reports provider mode:

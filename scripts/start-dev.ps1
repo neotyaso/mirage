@@ -2,14 +2,15 @@
 .SYNOPSIS
   mirage 展示ランタイムの一発起動スクリプト (Windows用ホットスタンバイ)。
 .DESCRIPTION
+  NOTE: 予備スクリプト (メインは npm run dev / scripts/dev.mjs)。
   Check order: vite(:5173) -> local STT(:8000, downなら裏で自動起動)
-    -> backend(:8002, downなら裏で自動起動)
+    -> backend(:8002, 廃止のため警告のみ)
     -> AivisSpeech(:10101, 警告のみ) -> Ollama(:11434, 警告のみ).
-  フォールバック (STT/backend) はホットスタンバイが前提のため、
+  フォールバック (STT) はホットスタンバイが前提のため、
   down時は裏プロセスで起動してヘルス応答まで待つ。
-  AivisSpeech/Ollama は外部アプリ前提のため自動起動せず警告のみ。
+  backend/AivisSpeech/Ollama は自動起動せず警告のみ。
   -LaunchVite を付けると最後に vite をフォアグラウンド起動する
-  (`npm run dev:all` 用。Ctrl+C で vite だけ止まる。裏の STT/backend は残る)。
+  (Ctrl+C で vite だけ止まる。裏の STT は残る)。
   終了コード: 0=起動可、1=必須サービス不足。
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev.ps1
@@ -22,12 +23,10 @@ param(
   [switch]$WhatIf,
   [switch]$LaunchVite,
   [int]$SttWaitSec = 180,
-  [int]$BackendWaitSec = 30,
   [int]$TimeoutSec = 4
 )
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$BackendDir = Join-Path $RepoRoot "moshi-backend"
 
 $SvcViteName = "vite (frontend)"
 $SvcViteUrl = "http://localhost:5173/"
@@ -127,41 +126,6 @@ function Start-SttServer {
   return $false
 }
 
-function Start-Backend {
-  if (-not (Test-Path -LiteralPath $BackendDir)) {
-    Write-Host "[ NG ] moshi-backend not found." -ForegroundColor Red
-    Write-Host $BackendDir -ForegroundColor Red
-    return $false
-  }
-  $python = Get-Command python -ErrorAction SilentlyContinue
-  if (-not $python) {
-    Write-Host "[ NG ] python not found. Check PATH." -ForegroundColor Red
-    return $false
-  }
-  $log = Join-Path $env:TEMP "mirage-backend.log"
-  $errLog = Join-Path $env:TEMP "mirage-backend.err.log"
-  Write-Host "[ .. ] starting backend (:8002) in background..." -ForegroundColor Yellow
-  Write-Host "       log: $log" -ForegroundColor Yellow
-  try {
-    Start-Process -FilePath "python" `
-      -ArgumentList "-m", "uvicorn", "server.gemini_main:app", "--port", "8002" `
-      -WorkingDirectory $BackendDir -WindowStyle Minimized `
-      -RedirectStandardOutput $log -RedirectStandardError $errLog `
-      -ErrorAction Stop | Out-Null
-  } catch {
-    Write-Host "[ NG ] failed to start uvicorn." -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    return $false
-  }
-  $deadline = (Get-Date).AddSeconds($BackendWaitSec)
-  if (Wait-HttpOk -Url $SvcBackendUrl -Timeout $TimeoutSec -Deadline $deadline) {
-    Write-Host "[ OK ] backend (:8002) is up." -ForegroundColor Green
-    return $true
-  }
-  Write-Host "[ NG ] backend (:8002) did not respond." -ForegroundColor Red
-  return $false
-}
-
 Write-Host "mirage startup check" -ForegroundColor Cyan
 $failed = 0
 $hardFailed = 0
@@ -184,7 +148,6 @@ if (-not (Test-Service -Name $SvcSttName -Url $SvcSttUrl -Timeout $TimeoutSec)) 
 # 3. backend (:8002). moshi-backend廃止のため警告のみ
 if (-not (Test-Service -Name $SvcBackendName -Url $SvcBackendUrl -Timeout $TimeoutSec)) {
   Write-Host "       -> backend不要 (moshi-backend廃止)。無視してよい。" -ForegroundColor Yellow
-}
 }
 
 # 4. AivisSpeech (warn only)
