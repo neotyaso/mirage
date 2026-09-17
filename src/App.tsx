@@ -6,7 +6,6 @@ import { Avatar } from "./components/Avatar";
 import { Room } from "./components/Room";
 import { WindowFrame } from "./components/WindowFrame";
 import { Ambience } from "./components/Ambience";
-import { playNoticeChime } from "./audio/accent";
 import { generateVisionComment } from "./vision/visionComment";
 import { useFaceDetection, getDistanceZone, ZONE_THRESHOLDS, adjustZoneThreshold, resetZoneThresholds } from "./hooks/useFaceDetection";
 import type { FaceCenter, DistanceZone } from "./hooks/useFaceDetection";
@@ -21,6 +20,32 @@ const CAM_BASE: [number, number, number] = [0, 1.1, 3];
 const CAM_RANGE_X = 0.8; // 顔が端にいると左右±0.8m動く
 const CAM_RANGE_Y = 0.35;
 const CAM_LERP = 0.06; // 追従の滑らかさ（小さいほど遅れる）
+
+type Engine = "groq" | "gemini";
+
+// スタート画面とデバッグパネルのエンジン切替UIを統一。見た目は呼び出し側の
+// baseStyle/activeBg/inactiveBgで保つため、ここではボタンの並びだけ作る
+function EngineSwitch({ engine, baseStyle, activeBg, inactiveBg, onSelect }: {
+  engine: Engine;
+  baseStyle: CSSProperties;
+  activeBg: string;
+  inactiveBg: string;
+  onSelect: (e: Engine) => void;
+}) {
+  return (
+    <>
+      {(["groq", "gemini"] as const).map((e) => (
+        <button
+          key={e}
+          style={{ ...baseStyle, background: engine === e ? activeBg : inactiveBg }}
+          onClick={() => onSelect(e)}
+        >
+          {e === "groq" ? "Groq" : "Gemini"}
+        </button>
+      ))}
+    </>
+  );
+}
 
 function OffAxisCamera({ faceCenterRef }: { faceCenterRef: MutableRefObject<FaceCenter | null> }) {
   const { camera } = useThree();
@@ -191,7 +216,6 @@ export default function App() {
   // エンジン切替: "gemini"=メイン(S2S) / "groq"=フォールバック用パイプライン。
   // useGeminiLive側の追加契約(log/resetTranscript/metrics)は別担当が実装中のため、
   // ここでは契約名で参照しつつ未実装でも落ちない防御フォールバックを付ける.
-  type Engine = "groq" | "gemini";
   const [engine, setEngine] = useState<Engine>("gemini");
   const engineRef = useRef<Engine>("gemini");
   useEffect(() => { engineRef.current = engine; }, [engine]);
@@ -239,12 +263,19 @@ export default function App() {
     volumeRef.current = 0;
   }
 
+  // geminiIntentionalRef=true→disconnect→setTimeout(1000)の定型を1箇所に統一。
+  // disconnectは呼び出し側から受け取る（ref経由と直接参照が混在するため）。
+  // 呼ばない分岐でもフラグのon/offは揃えるためdisconnectなしでも呼べる
+  function intentionalGeminiDisconnect(disconnect?: () => void) {
+    geminiIntentionalRef.current = true;
+    if (disconnect) { try { disconnect(); } catch { /* ignore */ } }
+    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+  }
+
   function doFallbackToGroq(reason: string) {
     if (engineRef.current !== "gemini") return;
-    geminiIntentionalRef.current = true;
-    try { geminiRaw.disconnect(); } catch { /* ignore */ }
+    intentionalGeminiDisconnect(() => geminiRaw.disconnect());
     stopAppAudio();
-    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
     geminiFailCountRef.current = 0;
     geminiRetryingRef.current = false;
     setFallbackNotice(reason);
@@ -320,11 +351,10 @@ export default function App() {
   // エンジン切替時は旧エンジン側を止める（両方のマイク/音声が同時に走らないように）
   function switchEngine(next: Engine) {
     if (next === engineRef.current) return;
-    geminiIntentionalRef.current = true;
     if (convState !== "idle") stopConversation();
-    if (geminiActive) { try { geminiRaw.disconnect(); } catch { /* ignore */ } }
+    if (geminiActive) intentionalGeminiDisconnect(() => geminiRaw.disconnect());
+    else intentionalGeminiDisconnect();
     stopAppAudio();
-    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
     geminiFailCountRef.current = 0;
     geminiRetryingRef.current = false;
     if (next === "gemini") setFallbackNotice(null); // 手動で戻す＝フォールバック解除
@@ -419,15 +449,7 @@ export default function App() {
     const myGen = ++speakGenRef.current;
 
     // 前の音声がまだ再生中なら止めてから新しい発話を始める（声の重なり防止）
-    if (activeSourceRef.current) {
-      try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
-      activeSourceRef.current.ctx.close().catch(() => {});
-      activeSourceRef.current = null;
-    }
-    speechSynthesis.cancel();
-
-    speakingRef.current = false;
-    volumeRef.current = 0;
+    stopAppAudio();
     try {
       const qRes = await fetch(
         `${AIVIS_URL}/audio_query?text=${encodeURIComponent(text)}&speaker=${SPEAKER_ID}`,
@@ -613,8 +635,7 @@ export default function App() {
               (reachedInteractive || now - firstSeenAtRef.current > GREET_FALLBACK_MS) &&
               now - lastCall.current > 1500 // 連打防止（最低1.5秒）
             ) {
-              // 気づきの軽い効果音アクセントを声の直前に鳴らす（来場者の左右位置=panRefに寄せる）
-              playNoticeChime(0.05, panRef.current);
+              // 気づきの呼び込みを鳴らす
               callOut(z);
               lastCall.current = now;
               hasGreetedRef.current = true;
@@ -707,10 +728,8 @@ export default function App() {
             fireAction("beckon");
           }
           if (engineRef.current === "gemini") {
-            geminiIntentionalRef.current = true;
-            geminiDisconnectRef.current();
+            intentionalGeminiDisconnect(() => geminiDisconnectRef.current());
             geminiResetRef.current();
-            setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
           } else {
             stopConversation();
             resetHistory();
@@ -815,15 +834,13 @@ export default function App() {
           </button>
           {/* エンジン切替（開始画面。デフォルトは既存Groq） */}
           <div style={{ display: "flex", gap: 8 }}>
-            {(["groq", "gemini"] as const).map((e) => (
-              <button
-                key={e}
-                style={{ ...engineBtnStyle, background: engine === e ? "#8b5cf6" : "rgba(55,65,81,0.85)" }}
-                onClick={() => { if (e === "gemini") setFallbackNotice(null); setEngine(e); }}
-              >
-                {e === "groq" ? "Groq" : "Gemini"}
-              </button>
-            ))}
+            <EngineSwitch
+              engine={engine}
+              baseStyle={engineBtnStyle}
+              activeBg="#8b5cf6"
+              inactiveBg="rgba(55,65,81,0.85)"
+              onSelect={(e) => { if (e === "gemini") setFallbackNotice(null); setEngine(e); }}
+            />
           </div>
         </div>
       ) : debugMode ? (
@@ -842,22 +859,13 @@ export default function App() {
               } else {
                 setPaused(true);
                 dispatchInteraction({ type: "APP_PAUSED" });
-                speechSynthesis.cancel();
                 // 呼び込み/驚き等のセリフ(speak())がAivisSpeechで再生中の場合、
                 // stopConversation()はuseConversation側の音声しか止めないため、
                 // App.tsx自前のactiveSourceRefも明示的に止める必要がある
-                if (activeSourceRef.current) {
-                  try { activeSourceRef.current.stop(); } catch { /* already stopped */ }
-                  activeSourceRef.current.ctx.close().catch(() => {});
-                  activeSourceRef.current = null;
-                }
-                speakingRef.current = false;
-                volumeRef.current = 0;
+                stopAppAudio();
                 if (engineRef.current === "gemini") {
                   if (geminiActive) {
-                    geminiIntentionalRef.current = true;
-                    geminiDisconnectRef.current();
-                    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+                    intentionalGeminiDisconnect(() => geminiDisconnectRef.current());
                   }
                 } else if (convState !== "idle") stopConversation();
               }
@@ -873,15 +881,13 @@ export default function App() {
         <div style={convPanelStyle}>
           <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
             {/* エンジン切替（デバッグ用。HUDはpointer-events:noneのため操作系はここに置く） */}
-            {(["groq", "gemini"] as const).map((e) => (
-              <button
-                key={e}
-                style={{ ...convBtnStyle, background: engine === e ? "#8b5cf6" : "#374151" }}
-                onClick={() => switchEngine(e)}
-              >
-                {e === "groq" ? "Groq" : "Gemini"}
-              </button>
-            ))}
+            <EngineSwitch
+              engine={engine}
+              baseStyle={convBtnStyle}
+              activeBg="#8b5cf6"
+              inactiveBg="#374151"
+              onSelect={switchEngine}
+            />
           </div>
           <div style={{ marginBottom: 8, display: "flex", gap: 8, justifyContent: "center" }}>
             <button
@@ -892,9 +898,7 @@ export default function App() {
                     speak(CONVERSATION_START_LINES[Math.floor(Math.random() * CONVERSATION_START_LINES.length)]);
                     void connectGeminiRobustRef.current();
                   } else {
-                    geminiIntentionalRef.current = true;
-                    geminiDisconnectRef.current();
-                    setTimeout(() => { geminiIntentionalRef.current = false; }, 1000);
+                    intentionalGeminiDisconnect(() => geminiDisconnectRef.current());
                   }
                 } else if (convState === "idle") {
                   startConversation();
@@ -949,7 +953,14 @@ export default function App() {
   );
 }
 
+const btnBase: CSSProperties = {
+  color: "#fff",
+  border: "none",
+  cursor: "pointer",
+};
+
 const startBtnStyle: CSSProperties = {
+  ...btnBase,
   position: "absolute",
   top: "50%",
   left: "50%",
@@ -957,26 +968,21 @@ const startBtnStyle: CSSProperties = {
   padding: "16px 36px",
   fontSize: 18,
   fontWeight: "bold",
-  color: "#fff",
   background: "linear-gradient(135deg, #ff6ad5, #8b5cf6)",
-  border: "none",
   borderRadius: 12,
-  cursor: "pointer",
   boxShadow: "0 4px 20px rgba(139,92,246,0.6)",
 };
 
 const callBtnStyle: CSSProperties = {
+  ...btnBase,
   position: "absolute",
   bottom: 16,
   left: "50%",
   transform: "translateX(-50%)",
   padding: "10px 20px",
   fontSize: 14,
-  color: "#fff",
   background: "rgba(139,92,246,0.8)",
-  border: "none",
   borderRadius: 8,
-  cursor: "pointer",
 };
 
 const convPanelStyle: CSSProperties = {
@@ -992,22 +998,18 @@ const convPanelStyle: CSSProperties = {
 };
 
 const convBtnStyle: CSSProperties = {
+  ...btnBase,
   padding: "10px 20px",
   fontSize: 14,
-  color: "#fff",
-  border: "none",
   borderRadius: 8,
-  cursor: "pointer",
   fontWeight: "bold",
 };
 
 const engineBtnStyle: CSSProperties = {
+  ...btnBase,
   padding: "8px 18px",
   fontSize: 13,
-  color: "#fff",
-  border: "none",
   borderRadius: 8,
-  cursor: "pointer",
   fontWeight: "bold",
 };
 
@@ -1029,14 +1031,12 @@ const fallbackBannerStyle: CSSProperties = {
 };
 
 const fallbackBackBtnStyle: CSSProperties = {
+  ...btnBase,
   padding: "6px 12px",
   fontSize: 12,
   fontWeight: "bold",
-  color: "#fff",
   background: "#8b5cf6",
-  border: "none",
   borderRadius: 6,
-  cursor: "pointer",
   whiteSpace: "nowrap",
 };
 

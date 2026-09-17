@@ -26,6 +26,17 @@ const STT_URL = "http://localhost:8000/health";
 const BACKEND_URL = "http://localhost:8002/health";
 const AIVIS_URL = "http://localhost:10101/speakers";
 const OLLAMA_URL = "http://localhost:11434/api/tags";
+const GROQ_URL = "http://localhost:5173/groq/openai/v1/models";
+
+// scripts/health-check.mjs と共有する唯一のURL定義。追加・変更はここだけに行う。
+export const SERVICE_URLS = {
+  vite: VITE_URL,
+  stt: STT_URL,
+  backend: BACKEND_URL,
+  aivis: AIVIS_URL,
+  ollama: OLLAMA_URL,
+  groq: GROQ_URL,
+};
 
 const STT_WAIT_MS = Number(process.env.STT_WAIT_SEC ?? 180) * 1000;
 
@@ -37,7 +48,7 @@ function pythonCmd() {
   return isWin ? "python" : "python3";
 }
 
-async function health(url, timeoutMs = 4000) {
+export async function health(url, timeoutMs = 4000) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     return res.ok;
@@ -46,7 +57,7 @@ async function health(url, timeoutMs = 4000) {
   }
 }
 
-async function waitFor(name, url, waitMs) {
+export async function waitFor(name, url, waitMs) {
   const deadline = Date.now() + waitMs;
   process.stdout.write(`[wait] ${name} `);
   for (;;) {
@@ -176,10 +187,14 @@ async function main() {
   });
 }
 
-try {
-  await main();
-} catch (err) {
-  console.error(`[ NG ] ${err.message}`);
-  cleanup();
-  process.exit(1);
+// import時 (health-check.mjsからの委譲) はmainを実行しない
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  try {
+    await main();
+  } catch (err) {
+    console.error(`[ NG ] ${err.message}`);
+    cleanup();
+    process.exit(1);
+  }
 }

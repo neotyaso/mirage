@@ -191,20 +191,6 @@ export function useConversation(
   const abortRef = useRef<AbortController | null>(null);
   const logIdRef = useRef(0);
 
-  const pushLog = useCallback((role: "user" | "assistant", text: string) => {
-    setLog((prev) => [...prev, { id: logIdRef.current++, role, text }]);
-  }, []);
-
-  // ストリーミング中のレムの発言用: 空バブルを作って中身を随時更新する
-  const startAssistantEntry = useCallback(() => {
-    const id = logIdRef.current++;
-    setLog((prev) => [...prev, { id, role: "assistant", text: "" }]);
-    return id;
-  }, []);
-  const updateAssistantEntry = useCallback((id: number, text: string) => {
-    setLog((prev) => prev.map((e) => (e.id === id ? { ...e, text } : e)));
-  }, []);
-
   // VAD用
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -241,9 +227,10 @@ export function useConversation(
   // （同じtagが連続で来ても、参照が同一だとAvatar側で変化を検知できないため）
   const actionRef = useRef<{ tag: ActionTag; id: number } | null>(null);
   const actionIdRef = useRef(0);
-  const fireAction = useCallback((tag: ActionTag) => {
+  // 全action発火の単一ヘルパー（直接 actionRef.current 代入はしない）
+  const fire = (tag: ActionTag) => {
     actionRef.current = { tag, id: ++actionIdRef.current };
-  }, []);
+  };
   // 相手が話している間の相槌(頷き)の最終発火時刻（連発防止）
   const lastListenNodRef = useRef(0);
 
@@ -319,10 +306,16 @@ export function useConversation(
     }
   }, [speakingRef, volumeRef, panRef, interruptSpeech]);
 
-  // TTSキューに文を追加。前の文の再生が終わってから次を再生するので重ならない
-  const enqueueSpeak = useCallback((text: string) => {
-    ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(text));
-  }, [speakAivis]);
+  // 単発発話の単一経路（announce/nudge共用）: 履歴+表示+ログ確定までを一括で行う
+  const commitAssistant = (text: string) => {
+    historyRef.current.push({ role: "assistant", content: text });
+    setReply(text);
+    setLog((prev) => [...prev, { id: logIdRef.current++, role: "assistant", text }]);
+  };
+  const speakSingle = async (text: string) => {
+    commitAssistant(text);
+    await speakAivis(text);
+  };
 
   // ---- LLM（Groq, ストリーミング） ----
   // トークンを逐次受信し、文（。！？）が完成するたびに生成完了を待たずTTSへ回す。
@@ -343,7 +336,9 @@ export function useConversation(
       messages.splice(messages.length - 1, 0, { role: "system", content: `【いまの状況】${contextNote}` });
     }
 
-    const entryId = startAssistantEntry();
+    // ストリーミング中の空バブルを作って中身を随時更新する
+    const entryId = logIdRef.current++;
+    setLog((prev) => [...prev, { id: entryId, role: "assistant", text: "" }]);
     let full = "";
     let unspoken = "";
     let tagChecked = false; // 応答冒頭の行動タグ判定が済んだか
@@ -399,14 +394,14 @@ export function useConversation(
                 unspoken = unspoken.slice(m[0].length);
                 full = full.slice(m[0].length);
                 tagChecked = true;
-                actionRef.current = { tag: m[1] as ActionTag, id: ++actionIdRef.current };
+                fire(m[1] as ActionTag);
               } else if (unspoken.length >= ACTION_TAG_GIVEUP_CHARS) {
                 tagChecked = true; // タグの形になっていない → タグなしと判断
               }
             }
           }
 
-          updateAssistantEntry(entryId, full);
+          setLog((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: full } : e)));
           setReply(full);
 
           if (tagChecked) {
@@ -416,15 +411,16 @@ export function useConversation(
               let sentence = ready.sentence;
               if (ACTION_TAG_GLOBAL_RE.test(sentence)) {
                 const { cleaned, tags } = stripInlineActionTags(sentence);
-                for (const tag of tags) actionRef.current = { tag, id: ++actionIdRef.current };
+                for (const tag of tags) fire(tag);
                 full = full.replace(sentence, cleaned);
                 sentence = cleaned;
-                updateAssistantEntry(entryId, full);
+                setLog((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: full } : e)));
                 setReply(full);
               }
               if (sentence) {
                 setState("speaking");
-                enqueueSpeak(sentence);
+                const line = sentence;
+                ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(line));
               }
             }
           }
@@ -450,7 +446,7 @@ export function useConversation(
             const data = await res.json();
             full = data.message?.content ?? "";
             unspoken = full;
-            if (full) updateAssistantEntry(entryId, full);
+            if (full) setLog((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: full } : e)));
             setReply(full);
           }
         } catch { /* ローカルも失敗。諦める */ }
@@ -460,15 +456,16 @@ export function useConversation(
     let rest = unspoken.trim();
     if (rest && ACTION_TAG_GLOBAL_RE.test(rest)) {
       const { cleaned, tags } = stripInlineActionTags(rest);
-      for (const tag of tags) actionRef.current = { tag, id: ++actionIdRef.current };
+      for (const tag of tags) fire(tag);
       full = full.replace(rest, cleaned);
       rest = cleaned;
-      updateAssistantEntry(entryId, full);
+      setLog((prev) => prev.map((e) => (e.id === entryId ? { ...e, text: full } : e)));
       setReply(full);
     }
     if (rest && activeRef.current) {
       setState("speaking");
-      enqueueSpeak(rest);
+      const line = rest;
+      ttsQueueRef.current = ttsQueueRef.current.then(() => speakAivis(line));
     }
     if (full) historyRef.current.push({ role: "assistant", content: full });
 
@@ -477,16 +474,13 @@ export function useConversation(
     else setState("idle");
     busyRef.current = false;
     lastInteractionRef.current = Date.now();
-  }, [enqueueSpeak, startAssistantEntry, updateAssistantEntry]);
+  }, [speakAivis]);
 
   // 固定文を1つ読み上げるだけの発話（LLMを呼ばない）。「どしたんモード」で人を検知した瞬間の
   // 挨拶を毎回必ず同じ文言にする（LLM任せだとブレる・言わないことがあるため）用途に使う
   const announce = useCallback(async (text: string) => {
-    historyRef.current.push({ role: "assistant", content: text });
-    setReply(text);
-    pushLog("assistant", text);
-    await speakAivis(text);
-  }, [speakAivis, pushLog]);
+    await speakSingle(text);
+  }, [speakAivis]);
 
   // 沈黙が続いたときレム側から話題を振る
   // LLMは呼ばない: 応答待ちが発生すると沈黙がさらに伸びて逆効果な上、
@@ -498,15 +492,12 @@ export function useConversation(
     busyRef.current = true;
     setState("thinking");
     const line = pool[Math.floor(Math.random() * pool.length)];
-    historyRef.current.push({ role: "assistant", content: line });
-    setReply(line);
-    pushLog("assistant", line);
-    await speakAivis(line);
+    await speakSingle(line);
     if (activeRef.current) setState("listening");
     else setState("idle");
     busyRef.current = false;
     lastInteractionRef.current = Date.now();
-  }, [speakAivis, pushLog]);
+  }, [speakAivis]);
 
   // ---- VAD ループ ----
   const startVadLoop = useCallback((analyser: AnalyserNode) => {
@@ -536,11 +527,11 @@ export function useConversation(
           chunksRef.current = [];
           recorderRef.current?.start();
           // 相手が話し始めたら「うんうん」と頷いて聞く（相槌）
-          fireAction("nod");
+          fire("nod");
           lastListenNodRef.current = now;
         } else if (now - lastListenNodRef.current > 2600 && Math.random() < 0.6) {
           // 長めに話している時はたまに追加で頷く（機械的な連発は避ける）
-          fireAction("nod");
+          fire("nod");
           lastListenNodRef.current = now;
         }
       } else if (isSpeechRef.current && now - lastSpeechRef.current > SILENCE_DURATION_MS) {
@@ -565,7 +556,7 @@ export function useConversation(
       vadRafRef.current = requestAnimationFrame(loop);
     }
     loop();
-  }, [speakingRef, nudge, fireAction]);
+  }, [speakingRef, nudge]);
 
   // ---- 会話モードON ----
   const startConversation = useCallback(async () => {
@@ -627,7 +618,7 @@ export function useConversation(
         }
         if (text && activeRef.current) {
           setTranscript(text);
-          pushLog("user", text);
+          setLog((prev) => [...prev, { id: logIdRef.current++, role: "user", text }]);
           await chat(text);
           return;
         }
@@ -637,7 +628,7 @@ export function useConversation(
     };
 
     startVadLoop(analyser);
-  }, [chat, startVadLoop, pushLog]);
+  }, [chat, startVadLoop]);
 
   // ---- 会話モードOFF ----
   const stopConversation = useCallback(() => {

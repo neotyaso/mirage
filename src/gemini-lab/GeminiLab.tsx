@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { useGeminiLive } from "../hooks/useGeminiLive";
 import type { GeminiState } from "../hooks/useGeminiLive";
 
-// Gemini Live API (gemini-3.1-flash-live-preview) の単体テストページ。
+// Gemini Live API (gemini-3.8-live) の単体テストページ。
 // 開き方: `npm run dev` → http://localhost:5173/gemini-lab.html
 // 要: .env に GEMINI_API_KEY (vite proxy が ?key= 付与、ブラウザには出さない)。
 
@@ -81,7 +81,7 @@ export function GeminiLab() {
     <div style={pageStyle}>
       <h1 style={{ fontSize: 18, margin: "0 0 4px" }}>Gemini Lab — Live API単体テスト</h1>
       <p style={{ fontSize: 12, opacity: 0.7, margin: "0 0 12px" }}>
-        gemini-3.1-flash-live-preview に直結。接続→マイクが自動で流れ始める。
+        gemini-3.8-live に直結。接続→マイクが自動で流れ始める。
         割込（バージイン）対応。開き方: <code>npm run dev</code> → <code>/gemini-lab.html</code>
       </p>
 

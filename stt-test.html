@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STT Test — ローカル文字起こし試用</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 32px auto; padding: 0 16px; }
+      button { font-size: 16px; padding: 8px 20px; margin-right: 8px; }
+      #recBtn.recording { background: #d33; color: #fff; }
+      #result { border: 1px solid #ccc; min-height: 3em; padding: 12px; margin: 12px 0; white-space: pre-wrap; }
+      #meta { color: #666; font-size: 14px; }
+      #log { font-size: 13px; color: #444; }
+      #log li { margin-bottom: 6px; }
+      input[type="text"] { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>STT Test</h1>
+    <label>エンドポイント（vite経由なら <code>/stt/transcribe</code>、直叩きなら <code>http://localhost:8000/transcribe</code>）</label>
+    <input id="url" type="text" value="/stt/transcribe" />
+    <div>
+      <button id="recBtn">● 録音開始</button>
+      <button id="fileBtn">ファイルで試す</button>
+      <input id="file" type="file" accept="audio/*" style="display:none" />
+    </div>
+    <div id="result">(ここに結果)</div>
+    <div id="meta"></div>
+    <h3>履歴</h3>
+    <ul id="log"></ul>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let recorder = null, chunks = [], recStart = 0, stream = null;
+
+      async function transcribe(blob, label) {
+        const url = $("url").value;
+        const form = new FormData();
+        form.append("audio", blob, "audio.webm");
+        $("result").textContent = "認識中…";
+        const t0 = performance.now();
+        try {
+          const res = await fetch(url, { method: "POST", body: form });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const ms = Math.round(performance.now() - t0);
+          const json = await res.json();
+          const text = json.text ?? "";
+          $("result").textContent = text || "(空文字：無音/非音声と判定)";
+          $("meta").textContent = `${label} / リクエスト ${ms}ms`;
+          const li = document.createElement("li");
+          li.textContent = `[${ms}ms] ${text || "(空)"}`;
+          $("log").prepend(li);
+        } catch (e) {
+          $("result").textContent = "エラー: " + e.message;
+        }
+      }
+
+      $("recBtn").onclick = async () => {
+        if (recorder && recorder.state !== "inactive") { recorder.stop(); return; }
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        chunks = [];
+        recorder = new MediaRecorder(stream);
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          $("recBtn").textContent = "● 録音開始";
+          $("recBtn").classList.remove("recording");
+          const sec = ((performance.now() - recStart) / 1000).toFixed(1);
+          await transcribe(new Blob(chunks, { type: "audio/webm" }), `録音 ${sec}s`);
+        };
+        recStart = performance.now();
+        recorder.start();
+        $("recBtn").textContent = "■ 停止して認識";
+        $("recBtn").classList.add("recording");
+      };
+      $("fileBtn").onclick = () => $("file").click();
+      $("file").onchange = () => {
+        if ($("file").files[0]) transcribe($("file").files[0], "ファイル: " + $("file").files[0].name);
+        $("file").value = "";
+      };
+    </script>
+  </body>
+</html>

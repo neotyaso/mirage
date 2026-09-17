@@ -1,6 +1,48 @@
 # 再開メモ
 
-> 最終更新: 2026-09-11（Gemini完全自立型へ方針転換・Moshi系撤去・M1開始）
+> 最終更新: 2026-09-11夜（M1/M2/P1マージ済み・就寝前メモ）
+
+## ★ 直近の作業ログ（2026-09-11）
+
+- M1完了・mainマージ：Gemini直結導入、Groq/Gemini切替、mid/near自動connect、計測HUD。`tsc`通過
+- M2完了・mainマージ：Gemini→Groq自動フォールバック（3回リトライ→切替・バナー・手動復帰）、`scripts/start-dev.ps1`一発起動
+- P1完了・mainマージ（未配線）：`src/tracking/` トラッキング＋イベントログ基盤（43チェック通過）
+- Moshi系撤去済み。旧経路撤去は実機検証後に延期（展示死回避）
+- 決定事項：フォールバック3層（Gemini→Groq→ローカル/縮退）、BEV俯瞰可視化は採用、ESP32は候補（S3確認待ち）、研究一点は呼び込み効果測定、llmfitでローカル選定予定
+
+## ★ 次回やること（優先順）
+
+1. P1配線：150msポーリングで `tracker.update()` → `left` を `log.append("leave")`、`ZONE_THRESHOLDS` 受け渡し
+2. 実機検証：Gemini会話・遅延計測・フォールバック発動確認（`:8002`＋`npm run dev`＋マイク）
+3. 展示機で `llmfit recommend --json` → ローカルLLM/STT選定・`bench` 実測
+4. 借用ESP32の型番確認（S3のみRuView可）→ P2俯瞰可視化の実装
+5. 呼び込み第一声のZephyr化
+
+## ★ 方針総括（2026-09-11）
+
+**最終目標：完全自立型呼び込み**。クレカ・試供品配りの呼び込みの人のように、オペレータ不在で呼び込み→会話→見送りを自律継続する。手動の距離閾値いじり（far/mid）は撤廃方向。
+
+**着地点**：自立稼働する展示デモ＋数値で語れる体験（遅延・安定・立ち止まり率の計測）＋見せ物（デモ動画・アーキ図・Zenn1本）。研究寄り・プロダクト化はやらない。
+
+### ロードマップ
+
+- **M1（完了）**：Gemini直結導入・エンジン切替・自立フロー・計測HUD。`tsc`通過、mainマージ済み
+- **M2（完了）**：Gemini→Groq自動フォールバック（3回リトライ→切替・バナー・手動復帰）、`scripts/start-dev.ps1` 一発起動（:8002自動起動付き）。旧経路撤去は実機検証後に延期
+- **P1（完了・未配線）**：`src/tracking/` に通行人トラッキング＋イベントログ基盤（JSONL出力・AB用variant付き、43チェック通過）。App側150msポーリングへの配線が残件
+- **ローカルLLM選定（llmfit使用予定）**：フォールバック第2段のモデル選定に `llmfit recommend/bench` を使う。展示機での実測が先
+- **P2 俯瞰可視化（採用）**：テスラ式BEV風2Dマップ（人物・軌道・寄りそう度）。教授のUI要望と合流、デバッグにも使用
+- **P3 距離の連続化＋自動キャリブレーション**：far/mid撤廃、顔サイズ→距離の自己推定、dキー調整の撤廃
+- **P4 声かけポリシー**：軌道から寄りそう度スコア→声かけ判断。最初ルールベース、ログ蓄積後にデータ駆動へ
+- **P5 属性理解の拡張**：接近時に服装・行動を取得→キャッシュ→会話文脈に注入（イベント駆動、毎フレーム投げない）
+
+### 候補・条件付き
+
+- **ESP32補完（RuView CSI mesh・候補）**：カメラ主＋ESP32補助（死角・冗長・人数）の位置づけ。条件：借用ボードがESP32-S3であること（無印/C3は非対応）。手順：1ノードflash→sensing-server疎通→presence信号のみ取り込み→実測後に融合判断。注意：会場の群衆はCSIノイズ源、起動時60秒empty-roomキャリブレーション前提
+- **研究一点（教授要望）**：呼び込み効果の測定・最適化（声かけ→停止率・会話開始率の定量化）。P1のログ基盤に乗る。論文まで書くかは教授と合意要
+
+### やらないこと
+
+- text-to-motion等の研究寄り新規実装、24/7プロダクト化、演出の微調整ループ、声の完全統一への過剰投資
 >
 > ## ★ 2026-09-11: Gemini完全自立型への置換 (M1進行中)
 >
@@ -12,13 +54,16 @@
 > - Moshi S2S関連を撤去（front: `useMoshiConversation`・`moshiAudioProcessor`・`moshi-lab/`・`moshi-lab.html`／backend: `moshi_engine/`・`server/factory,websocket,protocol,main`・`cloud/modal_llmjp_moshi_app`・`scripts/test_modal_ws`・`monitoring/`・`audio/`・旧unit test3件）。`server/session.py` はGeminiが使うため保持。`tsc`・gemini factory import検証済み
 > - `useConversation`（Groq+Aivis経路）はM1完了まで保持、PlaygroundはAvatar調整用に保持
 >
-> ### これからやること（M1: 最小疎通＋計測付き）
-> 1. Appにエンジン切替（既存/Gemini）を追加
-> 2. 自立フロー移植（mid/near自動開始、離脱で停止＋履歴リセット、沈黙ナッジ）
-> 3. Avatar連携（speakingRef/volumeRef、ログ、リップシンク）
-> 4. 呼び込み第一声のZephyr化
-> 5. 計測（接続〜初回音声遅延、turn数、切断回数をHUD表示）
-> 6. M1完了後に `useConversation` 撤去・Aivis完全除去（M2: 自動フォールバック・長時間安定化・起動一発化）
+> ### M1完了（2026-09-11、worktree並列×2→mainマージ、tsc通過）
+> - hook: `useGeminiLive` に `log`（chunk追記・同一roleはApp側で結合）・`resetTranscript`・`metrics`（connectMs/firstAudioMs/turns/disconnects）追加
+> - App: 開始画面＋デバッグHUDでGroq/Gemini切替（既定Groq）、mid/near自動connect・離脱時disconnect＋resetTranscript、HUDにvia/metrics表示、speakingRef/volumeRef橋渡し
+> - 残件: 呼び込み第一声のZephyr化、App側フォールバック整理（hook実装修正で不要化）、実機での会話・遅延確認
+> ### これからやること（M2）
+> - `useConversation` 撤去・Aivis完全除去、自動フォールバック、長時間安定化、起動一発化
+> ### 自立型呼び込み構想（採用）
+> - 距離の連続化（far/mid撤廃・推定距離＋接近速度で行動決定）、自動キャリブレーション、軌道予測＋声かけ判断、無人運用
+> - 俯瞰可視化（テスラ式BEV風2Dマップ：人物・軌道・寄りそう度スコア表示）→ 教授のUI要望と合流、デバッグにも使用
+> - ESP32補完（RuView CSI mesh検討中・下記）。カメラ主＋ESP32補助の位置づけ
 >
 > ---
 >

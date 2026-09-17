@@ -27,7 +27,7 @@ export interface GeminiMetrics {
 
 const IN_RATE = 16_000;
 const OUT_RATE = 24_000;
-const MODEL = "gemini-3.1-flash-live-preview";
+const MODEL = "gemini-3.8-live";
 // 声は Zephyr 固定 (Lab側の選択肢は撤去済み)
 const VOICE = "Zephyr";
 
@@ -64,13 +64,14 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
   const capNodeRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const playCtxRef = useRef<AudioContext | null>(null);
-  const playQueueRef = useRef<Float32Array[]>([]);
-  const playingRef = useRef(false);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  // ギャップレス再生用: 予約済みsource群・次チャンク開始時刻・世代カウンタ
-  const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const playCursorRef = useRef(0);
-  const playGenRef = useRef(0);
+  // 再生追跡は単一refに集約 (playing=再生中 / cursor=次chunk予約時刻 / gen=世代 / current=直近source / active=予約済みsource群)
+  const playRef = useRef<{
+    playing: boolean;
+    cursor: number;
+    gen: number;
+    current: AudioBufferSourceNode | null;
+    active: Set<AudioBufferSourceNode>;
+  }>({ playing: false, cursor: 0, gen: 0, current: null, active: new Set() });
   const stateRef = useRef<GeminiState>("disconnected");
   const attemptRef = useRef(0);
 
@@ -109,8 +110,8 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
   }, []);
 
   const stopPlayback = useCallback(() => {
-    playQueueRef.current = [];
-    for (const src of activeSourcesRef.current) {
+    const p = playRef.current;
+    for (const src of p.active) {
       try {
         src.stop();
       } catch {
@@ -122,10 +123,10 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
         /* ignore */
       }
     }
-    activeSourcesRef.current.clear();
-    currentSourceRef.current = null;
-    playCursorRef.current = 0;
-    playingRef.current = false;
+    p.active.clear();
+    p.current = null;
+    p.cursor = 0;
+    p.playing = false;
   }, []);
 
   const playPcm24k = useCallback(
@@ -153,22 +154,23 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.connect(ctx.destination);
-      activeSourcesRef.current.add(src);
+      const p = playRef.current;
+      p.active.add(src);
       const now = ctx.currentTime;
-      if (playCursorRef.current < now - 0.2) playCursorRef.current = now + 0.05;
-      const startAt = playCursorRef.current;
-      playCursorRef.current = startAt + buf.duration;
-      playGenRef.current += 1;
-      const myGen = playGenRef.current;
-      currentSourceRef.current = src;
-      playingRef.current = true;
+      if (p.cursor < now - 0.2) p.cursor = now + 0.05;
+      const startAt = p.cursor;
+      p.cursor = startAt + buf.duration;
+      p.gen += 1;
+      const myGen = p.gen;
+      p.current = src;
+      p.playing = true;
       src.onended = () => {
-        activeSourcesRef.current.delete(src);
-        if (currentSourceRef.current === src) currentSourceRef.current = null;
+        p.active.delete(src);
+        if (p.current === src) p.current = null;
         // 猶予内に新チャンクが来なければ発話終了とみなす
         setTimeout(() => {
-          if (playGenRef.current === myGen && stateRef.current === "speaking") {
-            playingRef.current = false;
+          if (p.gen === myGen && stateRef.current === "speaking") {
+            p.playing = false;
             setStateSafe("listening");
           }
         }, 350);
@@ -176,7 +178,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       try {
         src.start(startAt);
       } catch {
-        activeSourcesRef.current.delete(src);
+        p.active.delete(src);
       }
     },
     [setStateSafe]
@@ -405,6 +407,8 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     }
   }, [state, stopCapture, stopPlayback]);
 
+  // unmount時の後始末はdisconnectと同一ヘルパー経由に集約
+  // (disconnect本体は呼ばない: setState/setVia不要・attempt加算不要のため。挙動同一)
   useEffect(() => {
     return () => {
       try {
@@ -412,12 +416,13 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       } catch {
         /* ignore */
       }
-      capNodeRef.current?.disconnect();
-      void capCtxRef.current?.close().catch(() => {});
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+      sessionRef.current = null;
+      stopCapture();
+      stopPlayback();
       void playCtxRef.current?.close().catch(() => {});
+      playCtxRef.current = null;
     };
-  }, []);
+  }, [stopCapture, stopPlayback]);
 
   return {
     state,

@@ -11,18 +11,9 @@ import type { FaceCenter, FaceExpression, DistanceZone } from "../hooks/useFaceD
 const MODEL_URL = "/avatar/sample.vrm";
 const WALK_URL = "/avatar/walk.vrma";
 
-// 口隠しパッチ(hideMouthLine)のneckボーン静止姿勢での基準オフセット。
-// neckが回転(nod等)している間は、この基準位置をneckの現在の回転で逆補正して
-// 位置・向きを維持する(単に子として乗せるだけだと回転の弧を描いてズレてしまうため)
-const MOUTH_PATCH_Y = 0.09;
-const MOUTH_PATCH_Z = 0.088;
-
 // 単発ジェスチャー(Mixamoからリターゲットしたフルボディの手続き型ではない本物のモーション)。
 // walkと違い「常時ループして重みだけ変える」のではなく、トリガーの度に最初から1回再生する
-type GestureTag = "stretch";
-const GESTURE_URLS: Record<GestureTag, string> = {
-  stretch: "/avatar/stretch.vrma",
-};
+const STRETCH_URL = "/avatar/stretch.vrma";
 // クリップの入り/抜けにかける時間(秒)。歩行と同じ理由(重みが低い間はbind pose寄りに流れる)で
 // 腕だけは低weightの間、基本姿勢へスナップする
 const GESTURE_FADE_S = 0.25;
@@ -46,6 +37,15 @@ function lerpAngle(a: number, b: number, t: number): number {
 // （フレーム数そのものが足りないため）。実時間で収束速度を保証するために使う
 function damp(rate60: number, delta: number): number {
   return 1 - Math.pow(1 - rate60, delta * 60);
+}
+// id変化で新規トリガーを検知するforce系refの重複パターンを一本化。消費したらidを進めて値を返す
+function consumeRefTrigger<T extends { id: number }>(ref: MutableRefObject<T | null> | undefined, lastId: MutableRefObject<number>): T | null {
+  const v = ref?.current;
+  if (v && v.id !== lastId.current) {
+    lastId.current = v.id;
+    return v;
+  }
+  return null;
 }
 
 export interface AvatarProps {
@@ -79,26 +79,6 @@ export interface AvatarProps {
   // Playground手動デモ発火専用: 気づいた瞬間の体の向きを強制指定してから気づき演出を発火する
   // （振り向き3パターンをそれぞれ単独でテストできるようにするため）
   forceNoticeRef?: MutableRefObject<{ tier: "front" | "side" | "back"; id: number } | null>;
-  // 読み込むVRMファイルのパス。未指定ならレム本体のMODEL_URL(sample.vrm)を使う。
-  // 「どしたんモード」等、別ページで別のアバターを表示するための拡張点
-  modelUrl?: string;
-  // trueなら口が関わる表情(リップシンク/happy/surprised)を一切動かさない。
-  // マスク装着モデルは口を動かすとマスクのテクスチャが裂けて見えるため、
-  // 「どしたんモード」で無効化する(まばたきなど口以外の表情は生かす)
-  disableLipSync?: boolean;
-  // trueなら口の位置(neckボーンからの相対位置)に薄い黒パッチを追加する。
-  // マスクより口のポリゴンが手前に来て、閉じた口の線がマスク越しに透けて見えるため、
-  // その一点だけを覆って隠す(disableLipSyncとセットで使う想定)
-  hideMouthLine?: boolean;
-  // 頷き(nod)でneckを倒す角度(ラジアン)。未指定ならNOD_ANGLE(0.35=約20°)。
-  // マスク装着モデルは大きく倒すほどheadのLookAt追従が追いつかず口元に隙間が
-  // 見えるため、「どしたんモード」では小さめの値を渡して首だけの控えめな
-  // 頷きにする
-  nodAngle?: number;
-  // trueなら「奥から歩いて近づく」演出を飛ばし、最初から接近済みの位置に固定して表示する。
-  // 「どしたんモード」は机上アップ想定で歩かせる必要がなく、歩行中に口隠しパッチ等の
-  // 位置がずれて見える問題も避けられる
-  startSettled?: boolean;
 }
 
 // 距離ゾーン別の「接近度」0〜1。ここから Z移動量と前傾を導く
@@ -279,7 +259,7 @@ export const DEFAULT_GLANCE_PARAMS: GlanceParams = {
 // 複数人いる時に視線を切り替えるインターバル（ms）
 const SCAN_INTERVAL = 2500;
 
-export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef, modelUrl, disableLipSync, hideMouthLine, startSettled, nodAngle }: AvatarProps) {
+export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, allFaceCentersRef, allEyeCentersRef, expressionRef, faceSizeRef, actionRef, paused, conversing, beckonPoseRef, glanceParamsRef, anchorGazeParamsRef, forceAnchorRef, forceNoticeRef }: AvatarProps) {
   const [vrm, setVrm] = useState<VRM | null>(null);
   const blinkClock = useRef(0);
   const nextBlink = useRef(2 + Math.random() * 3);
@@ -320,15 +300,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
   const neckBone = useRef<THREE.Object3D | null>(null);
   const lastActionId = useRef(0);
   const activeAction = useRef<{ tag: "nod" | "tilt"; t: number; dir: 1 | -1 } | null>(null);
-  // 口隠しパッチ(hideMouthLine)への参照。nod中はneckのpitchをそのまま受けると
-  // 実際の口(headのlookAt補正で首ほど傾かない)とズレて口が覗くため、
-  // nod分だけ逆回転させて打ち消す
-  const mouthPatch = useRef<THREE.Object3D | null>(null);
   // 単発ジェスチャー(伸び)。フルボディのMixamoリターゲット済みクリップを一度だけ再生する
-  const gestureMixers = useRef<Partial<Record<GestureTag, THREE.AnimationMixer>>>({});
-  const gestureActions = useRef<Partial<Record<GestureTag, THREE.AnimationAction>>>({});
-  const gestureDurations = useRef<Partial<Record<GestureTag, number>>>({});
-  const activeGesture = useRef<GestureTag | null>(null);
+  const gestureMixer = useRef<THREE.AnimationMixer | null>(null);
+  const gestureAction = useRef<THREE.AnimationAction | null>(null);
+  const gestureDuration = useRef(1);
+  const gestureActive = useRef(false);
   const gestureWeight = useRef(0);
   // 手招き(procedural)の再生位置。BECKON_DURATION_S以上＝非アクティブ
   const beckonT = useRef(BECKON_DURATION_S + 1);
@@ -353,7 +329,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
 
     let alive = true;
     loader.load(
-      modelUrl ?? MODEL_URL,
+      MODEL_URL,
       (gltf) => {
         const loaded = gltf.userData.vrm as VRM;
         if (loaded.meta?.metaVersion === "0") VRMUtils.rotateVRM0(loaded);
@@ -376,33 +352,6 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         if (rElbow) rElbow.rotation.z =  0.15;
         gestureBones.current = { lArm, rArm, lElbow, rElbow, lShoulder, rShoulder, rHand };
         neckBone.current = h?.getNormalizedBoneNode("neck") ?? null;
-
-        if (hideMouthLine && neckBone.current) {
-          // マスクより口のポリゴンが手前にあるため、口の位置だけ薄い黒パッチで覆う。
-          // headではなくneckに付けるのは、headはVRMのLookAtが毎フレーム上書きするため
-          // (↑309行目のコメント参照)、マスク本体を付けた時と同じ理由
-          // 胸の横揺れアイドルモーション(SWAY_AMOUNT)や頷きでneck以下が揺れても
-          // 口の線が隠れるよう少し余裕を持たせる(ただし大きすぎるとマスク上端から
-          // はみ出して肌の上に黒く見えてしまうため控えめに)。
-          // カメラが斜めから見るため、薄い板だと側面から隙間が見えることがあるので
-          // Z方向にも厚みを持たせて角度が付いても覆えるようにする
-          const geo = new THREE.BoxGeometry(0.036, 0.04, 0.02);
-          // マスク本体と同じライティング応答の質感にして継ぎ目を目立たなくする
-          // (単色の非ライティング素材だと、寄りのカメラでは平坦な板が浮いて見えていた)
-          const mat = new THREE.MeshStandardMaterial({ color: 0x08080a, roughness: 1, metalness: 0, depthTest: false });
-          const patch = new THREE.Mesh(geo, mat);
-          patch.renderOrder = 999;
-          patch.position.set(0, MOUTH_PATCH_Y, MOUTH_PATCH_Z);
-          neckBone.current.add(patch);
-          mouthPatch.current = patch;
-        }
-
-        if (startSettled) {
-          // 奥から歩いて近づく演出をスキップし、最初から接近済みの位置に直接置く
-          approach.current = 1;
-          bodyYaw.current = 0;
-          loaded.scene.position.set(0, 0, APPROACH_Z_FRONT);
-        }
 
         if (alive) setVrm(loaded);
         else VRMUtils.deepDispose(loaded.scene);
@@ -459,30 +408,28 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
 
-    (Object.entries(GESTURE_URLS) as [GestureTag, string][]).forEach(([tag, url]) => {
-      loader.load(
-        url,
-        (gltf) => {
-          if (!alive) return;
-          const vrmAnimations = gltf.userData.vrmAnimations as VRMAnimation[] | undefined;
-          const vrmAnimation = vrmAnimations?.[0];
-          if (!vrmAnimation) return;
+    loader.load(
+      STRETCH_URL,
+      (gltf) => {
+        if (!alive) return;
+        const vrmAnimations = gltf.userData.vrmAnimations as VRMAnimation[] | undefined;
+        const vrmAnimation = vrmAnimations?.[0];
+        if (!vrmAnimation) return;
 
-          const clip = createVRMAnimationClip(vrmAnimation, vrm);
-          const mixer = new THREE.AnimationMixer(vrm.scene);
-          const action = mixer.clipAction(clip);
-          action.setLoop(THREE.LoopOnce, 1);
-          action.clampWhenFinished = true;
-          action.setEffectiveWeight(0);
+        const clip = createVRMAnimationClip(vrmAnimation, vrm);
+        const mixer = new THREE.AnimationMixer(vrm.scene);
+        const action = mixer.clipAction(clip);
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.setEffectiveWeight(0);
 
-          gestureMixers.current[tag] = mixer;
-          gestureActions.current[tag] = action;
-          gestureDurations.current[tag] = clip.duration || 1;
-        },
-        undefined,
-        (e) => console.error(`${tag} VRMA load error:`, e)
-      );
-    });
+        gestureMixer.current = mixer;
+        gestureAction.current = action;
+        gestureDuration.current = clip.duration || 1;
+      },
+      undefined,
+      (e) => console.error(`stretch VRMA load error:`, e)
+    );
 
     return () => {
       alive = false;
@@ -498,7 +445,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
     // 腕など手続き型が管理するボーンは後段の処理で上書きされるようにする
     // ジェスチャー再生中は止める: walkクリップも同じ正規化ボーンを毎フレーム上書きするため、
     // weightがほぼ0でも動かし続けるとジェスチャークリップの姿勢が完全に打ち消されて見えなくなる
-    if (!activeGesture.current) walkMixer.current?.update(delta);
+    if (!gestureActive.current) walkMixer.current?.update(delta);
 
     // 単発アクションの発火処理（外部トリガー・徘徊中の生活感演出・気づき演出のどれからも呼ぶ共通処理）
     function triggerAction(tag: "stretch" | "nod" | "tilt" | "surprise" | "beckon" | "glance") {
@@ -513,19 +460,19 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
       } else if (tag === "beckon") {
         beckonT.current = 0; // 手招きを頭から再生
         // 伸び等のクリップが再生中だと脚・体が競合するので止める（手招みは上体だけの動作）
-        if (activeGesture.current) {
-          gestureActions.current[activeGesture.current]?.stop();
-          activeGesture.current = null;
+        if (gestureActive.current) {
+          gestureAction.current?.stop();
+          gestureActive.current = false;
           gestureWeight.current = 0;
         }
         activeAction.current = null;
       } else if (tag === "stretch") {
-        const clipAction = gestureActions.current[tag];
+        const clipAction = gestureAction.current;
         if (clipAction) {
           clipAction.reset();
           clipAction.setEffectiveWeight(0);
           clipAction.play();
-          activeGesture.current = tag;
+          gestureActive.current = true;
         }
       } else {
         // tiltは左右どちらに傾げるかを毎回ランダムに決める（nodは左右対称なので常に1）
@@ -545,9 +492,8 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
     // prevWanderWalkingを立てておくことで、この後の徘徊移動ロジックが「歩いていて今まさに
     // 到着した」扱いで処理し、到着時の滞在演出(リンガー上書き)を確実に発火させる
     // （zoneが不在/遠いの時のみ実際に反映される。それ以外は次にwander branchへ戻った時に有効）
-    const forceAnchor = forceAnchorRef?.current;
-    if (forceAnchor && forceAnchor.id !== lastForceAnchorId.current) {
-      lastForceAnchorId.current = forceAnchor.id;
+    const forceAnchor = consumeRefTrigger(forceAnchorRef, lastForceAnchorId);
+    if (forceAnchor) {
       wanderAnchor.current = forceAnchor.key;
       wanderTarget.current = { ...WANDER_ANCHORS[forceAnchor.key] };
       prevWanderWalking.current = true;
@@ -556,9 +502,8 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
     // Playground手動デモ発火: 気づいた瞬間の体の向きを指定の角度に強制してから、
     // 通常の気づき発火と全く同じ処理(noticeUntil等)を直接叩く。振り向き3パターンを
     // 個別に呼べるようにするためのデバッグ専用経路（本番の自動発火フローは変更しない）
-    const forceNotice = forceNoticeRef?.current;
-    if (forceNotice && forceNotice.id !== lastForceNoticeId.current) {
-      lastForceNoticeId.current = forceNotice.id;
+    const forceNotice = consumeRefTrigger(forceNoticeRef, lastForceNoticeId);
+    if (forceNotice) {
       const testYaw = forceNotice.tier === "front" ? Math.PI / 9 // 約20°
         : forceNotice.tier === "side" ? Math.PI / 2              // 90°
         : Math.PI * 0.94;                                        // 約170°
@@ -572,11 +517,10 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
 
     // ジェスチャークリップの再生・重み計算（入り/抜けをフェード、終了したら自動停止）
     let isGesturing = false;
-    if (activeGesture.current) {
-      const tag = activeGesture.current;
-      const mixer = gestureMixers.current[tag];
-      const clipAction = gestureActions.current[tag];
-      const duration = gestureDurations.current[tag] ?? 1;
+    if (gestureActive.current) {
+      const mixer = gestureMixer.current;
+      const clipAction = gestureAction.current;
+      const duration = gestureDuration.current;
       if (mixer && clipAction) {
         mixer.update(delta);
         const elapsed = clipAction.time;
@@ -588,11 +532,11 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         clipAction.setEffectiveWeight(w);
         isGesturing = true;
         if (elapsed >= duration - 0.001) {
-          activeGesture.current = null;
+          gestureActive.current = false;
           gestureWeight.current = 0;
         }
       } else {
-        activeGesture.current = null;
+        gestureActive.current = false;
       }
     }
     // nod/tiltの進行度。"neck"ボーンだけを動かす単発モーションなのでここで完結する
@@ -610,7 +554,7 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         // 0→1→0の三角波（往復）でモーションの山を作る
         const wave = Math.sin(p * Math.PI);
         if (tag === "nod") {
-          neckBone.current.rotation.x = wave * (nodAngle ?? NOD_ANGLE);
+          neckBone.current.rotation.x = wave * NOD_ANGLE;
         } else {
           neckBone.current.rotation.z = wave * TILT_ANGLE * activeAction.current.dir;
         }
@@ -1063,63 +1007,38 @@ export function Avatar({ speakingRef, volumeRef, faceCenterRef, eyeCenterRef, al
         }
       }
 
-      if (disableLipSync) {
-        // マスク装着モデルは口(や口を含むhappy/surprised等の複合表情)を動かすと
-        // テクスチャが裂けて見えるため、口に関わる表情は一切動かさない(まばたきのみ生かす)
-        mouth.current = 0;
-        em.setValue("aa", 0);
-        em.setValue("happy", 0);
-        em.setValue("surprised", 0);
+      // リップシンク
+      const vol = volumeRef?.current ?? 0;
+      // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
+      const target = speaking
+        ? (vol > 0 ? clamp01(vol * 1.4) : clamp01(0.2 + 0.6 * Math.abs(Math.sin(t * 16)) + 0.15 * (Math.random() - 0.5)))
+        : 0;
+      mouth.current = lerp(mouth.current, target, 0.35);
+      em.setValue("aa", mouth.current);
+
+      if (noticing) {
+        // 気づき演出中は来場者の表情に関係なく強制上書き:
+        // 最初のNOTICE_SURPRISE_S秒は「ハッ」と驚き、その後は「見つけた！」の笑顔にパッと切り替える
+        const nt = t - noticeStart.current;
+        const surprisePhase = nt < NOTICE_SURPRISE_S;
+        em.setValue("surprised", surprisePhase ? 0.9 : 0);
+        // 呼び込みセリフ発話中は口モーフ(aa)と競合するのでhappyを控えめに
+        em.setValue("happy", surprisePhase ? 0 : (speaking ? 0.5 : 0.9));
       } else {
-        // リップシンク
-        const vol = volumeRef?.current ?? 0;
-        // volumeRef がある（AivisSpeech）なら音量ベース、なければ簡易波
-        const target = speaking
-          ? (vol > 0 ? clamp01(vol * 1.4) : clamp01(0.2 + 0.6 * Math.abs(Math.sin(t * 16)) + 0.15 * (Math.random() - 0.5)))
+        // 来場者の表情に共感：笑顔→happy、驚き→surprised（しきい値二値判定）。
+        // さらにLLM由来の「驚き」リアクション（相手がすごいことを言った時）を surprised に重ねる。
+        // LLM驚きは来場者の顔とは独立に出したいので expr が無くても効く
+        const expr = expressionRef?.current;
+        const smileOn = !!expr && expr.smile >= SMILE_THRESHOLD;
+        const visitorSurprised = !!expr && expr.surprised >= SURPRISED_THRESHOLD;
+        // LLM驚きリアクションのフェード（残り0.9秒で徐々に抜けて自然に戻す）
+        const reactSurprise = reactSurpriseUntil.current > t
+          ? Math.min(1, (reactSurpriseUntil.current - t) / 0.9)
           : 0;
-        mouth.current = lerp(mouth.current, target, 0.35);
-        em.setValue("aa", mouth.current);
-
-        if (noticing) {
-          // 気づき演出中は来場者の表情に関係なく強制上書き:
-          // 最初のNOTICE_SURPRISE_S秒は「ハッ」と驚き、その後は「見つけた！」の笑顔にパッと切り替える
-          const nt = t - noticeStart.current;
-          const surprisePhase = nt < NOTICE_SURPRISE_S;
-          em.setValue("surprised", surprisePhase ? 0.9 : 0);
-          // 呼び込みセリフ発話中は口モーフ(aa)と競合するのでhappyを控えめに
-          em.setValue("happy", surprisePhase ? 0 : (speaking ? 0.5 : 0.9));
-        } else {
-          // 来場者の表情に共感：笑顔→happy、驚き→surprised（しきい値二値判定）。
-          // さらにLLM由来の「驚き」リアクション（相手がすごいことを言った時）を surprised に重ねる。
-          // LLM驚きは来場者の顔とは独立に出したいので expr が無くても効く
-          const expr = expressionRef?.current;
-          const smileOn = !!expr && expr.smile >= SMILE_THRESHOLD;
-          const visitorSurprised = !!expr && expr.surprised >= SURPRISED_THRESHOLD;
-          // LLM驚きリアクションのフェード（残り0.9秒で徐々に抜けて自然に戻す）
-          const reactSurprise = reactSurpriseUntil.current > t
-            ? Math.min(1, (reactSurpriseUntil.current - t) / 0.9)
-            : 0;
-          // リップシンク中はhappyを控えめに（口モーフと競合するため）
-          em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
-          em.setValue("surprised", Math.max(visitorSurprised ? 0.8 : 0, reactSurprise * 0.9));
-        }
+        // リップシンク中はhappyを控えめに（口モーフと競合するため）
+        em.setValue("happy", smileOn ? (speaking ? 0.4 : 0.9) : 0);
+        em.setValue("surprised", Math.max(visitorSurprised ? 0.8 : 0, reactSurprise * 0.9));
       }
-    }
-
-    // 口隠しパッチ: neckの子として乗せているだけだと、neckが回転(nod等)した時に
-    // 基準位置が回転の弧を描いて動いてしまい、実際の口(headのlookAt補正であまり
-    // 傾かない)とズレて隙間が見えてしまう。neckの現在のpitchぶんだけ逆回転させた
-    // 位置・向きを毎フレーム計算し直すことで、回転量によらず一定の見た目を保つ
-    if (mouthPatch.current && neckBone.current) {
-      const a = -neckBone.current.rotation.x;
-      const cosA = Math.cos(a);
-      const sinA = Math.sin(a);
-      mouthPatch.current.position.set(
-        0,
-        MOUTH_PATCH_Y * cosA - MOUTH_PATCH_Z * sinA,
-        MOUTH_PATCH_Y * sinA + MOUTH_PATCH_Z * cosA
-      );
-      mouthPatch.current.rotation.x = a;
     }
 
     vrm.update(delta);

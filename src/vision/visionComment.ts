@@ -33,6 +33,19 @@ function captureFrame(video: HTMLVideoElement, maxW = 240): string | null {
 
 const VISION_PROMPT = `あなたは展示ブースの陽気な呼び込みキャラ「レム」。目の前の来場者のカメラ画像を見て、その人の見た目の"いいところ"を見つけて一言だけ褒めて。服の色や柄・小物・髪型・持ち物・全体の雰囲気など、具体的なポイントを挙げて明るく褒める（イジったり欠点に触れたりは絶対にしない、褒めるだけ）。制約: タメ口でテンション高め・1文・15〜25文字・絵文字や記号や番号は付けない・セリフ本文だけ返す。人物がはっきり写っていない、または褒められる要素が全く見つからない場合のみ「${SKIP_TOKEN}」とだけ返す。`;
 
+// サニタイズ用正規表現は使い回し（都度生成しない）
+const QUOTE_EDGE_RE = /^["'「『]|["'」』]$/g;
+const EMOJI_RE = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu;
+const SKIP_RE = new RegExp(SKIP_TOKEN, "i");
+const MAX_VISION_COMMENT_LENGTH = 40;
+
+// 引用符除去・絵文字除去・長さ棄却を単一化（順序・条件は従来通り）
+function sanitizeVisionComment(raw: string): string | null {
+  const text = raw.trim().replace(QUOTE_EDGE_RE, "").trim().replace(EMOJI_RE, "").trim();
+  if (!text || SKIP_RE.test(text) || text.length > MAX_VISION_COMMENT_LENGTH) return null;
+  return text;
+}
+
 /**
  * 来場者のカメラフレームから見た目コメントを1つ生成する。
  * コメントできない/失敗/確信度低い(SKIP)場合は null（呼び出し側は何も喋らせない）。
@@ -64,13 +77,8 @@ export async function generateVisionComment(video: HTMLVideoElement | null): Pro
     });
     if (!res.ok) return null;
     const data = await res.json();
-    let text: string = (data.choices?.[0]?.message?.content ?? "").trim();
-    // 前後の引用符・絵文字を落とす
-    text = text.replace(/^["'「『]|["'」』]$/g, "").trim();
-    text = text.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "").trim();
-    // SKIP・空・長すぎ(指示無視)は棄却
-    if (!text || new RegExp(SKIP_TOKEN, "i").test(text) || text.length > 40) return null;
-    return text;
+    const raw: string = data.choices?.[0]?.message?.content ?? "";
+    return sanitizeVisionComment(raw);
   } catch {
     return null;
   }
